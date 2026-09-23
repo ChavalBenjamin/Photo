@@ -8,18 +8,19 @@
 #include <mutex>
 
 // ============================================================================
-// Photo - Etape 1+2 : moteur de table d'onde (forme de base + 16
-// harmoniques + Skew), avec visualisation/dessin, lecture test via MIDI,
-// et un premier bouton "photo" (capture FFT en direct, gel au
-// relachement) - le vrai systeme a 12 boutons viendra dans une etape
-// separee, ceci est la preuve de concept a une seule voix.
+// Photo - moteur de table d'onde (forme de base + 16 harmoniques + Skew)
+// + 12 voix "photo" independantes, chacune avec son propre bouton de
+// capture, son volume, sa transposition par octave et son ajustement
+// fin. Toutes les 12 lisent la MEME table d'onde partagee.
 // ============================================================================
+
+static constexpr int kNumVoices = 12;
 
 enum EParams
 {
   kParamBaseShape = 0, // 0=Sine, 1=Saw, 2=Triangle, 3=Square
   kParamSkew,          // 0-100% (0.5 = neutre)
-  kParamFreqSmooth,    // 0-50 ms : lissage de la frequence captee (Photo)
+  kParamFreqSmooth,    // 0-50 ms : lissage de la frequence captee
   kParamHarmonic1,
   kParamHarmonic2,
   kParamHarmonic3,
@@ -36,8 +37,14 @@ enum EParams
   kParamHarmonic14,
   kParamHarmonic15,
   kParamHarmonic16,
-  kNumParams
+  kParamVoiceParamsStart, // 12 voix x 3 params (Volume, Octave, Fine)
+  kNumParams = kParamVoiceParamsStart + kNumVoices * 3
 };
+
+// Helper : indice du parametre pour la voix "voiceIdx" (0-11), which =
+// 0 (Volume), 1 (Octave), 2 (Fine).
+inline int VoiceParam(int voiceIdx, int which) { return kParamVoiceParamsStart + voiceIdx * 3 + which; }
+enum EVoiceParamWhich { kVoiceVolume = 0, kVoiceOctave = 1, kVoiceFine = 2 };
 
 using namespace iplug;
 using namespace igraphics;
@@ -70,16 +77,16 @@ private:
 
   // Protege le moteur : RebuildIfNeeded() (thread principal, a chaque
   // changement de potard Harm/Skew) ne doit jamais s'executer en meme
-  // temps que la lecture de la table (thread audio, dans ProcessBlock) -
-  // meme lecon que sur les projets Spectral, oubliee ici au depart.
+  // temps que la lecture de la table (thread audio, dans ProcessBlock).
   std::mutex mEngineMutex;
   WavetableEngine mEngine;
-  // Test monophonique simple pour cette etape - le vrai systeme
-  // polyphonique (12 voix) viendra plus tard.
+
+  // Test monophonique simple (clavier MIDI) - le vrai systeme est les
+  // 12 voix Photo ci-dessous, ceci reste utile pour auditionner le
+  // moteur de table d'onde seul.
   WavetableOscillator mTestOsc;
 
-  // Premiere voix "photo" - preuve de concept, une seule pour l'instant.
-  SnapshotEngine mSnapshot;
+  SnapshotEngine mSnapshots[kNumVoices];
 
   std::mutex mWaveUIMutex;
   std::atomic<bool> mWaveUIUpdated { false };

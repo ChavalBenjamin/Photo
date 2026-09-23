@@ -62,6 +62,15 @@ public:
     RecomputeFreqSmoothCoeff();
   }
 
+  // Transposition par octave : -4 (÷16) a +4 (×16), 0 = neutre.
+  void SetOctaveShift(int shift) { mOctaveShift = std::clamp(shift, -4, 4); }
+
+  // Ajustement fin, en Hz, ajoute APRES la transposition par octave.
+  void SetFineTuneHz(float hz) { mFineTuneHz = std::clamp(hz, -20.f, 20.f); }
+
+  // Volume de cette voix (0-2, permet un peu de boost au-dela de l'unite).
+  void SetVolume(float vol) { mVolume = std::clamp(vol, 0.f, 2.f); }
+
   // Thread-safe : appele depuis l'UI (clic sur le bouton photo).
   void StartCapture() { mCapturing.store(true); }
   void StopCapture() { mCapturing.store(false); }
@@ -114,7 +123,7 @@ public:
       mPeakPhase[p] += mPeakFreqSmooth[p] / (float)mSampleRate; // phase 0..1
       if (mPeakPhase[p] >= 1.f) mPeakPhase[p] -= 1.f;
     }
-    return sum;
+    return sum * mVolume;
   }
 
 private:
@@ -161,6 +170,13 @@ private:
       if (p < (int)candidates.size())
       {
         targetFreq = (float)candidates[p].bin * (float)mSampleRate / (float)mFFTSize;
+        // Transposition : octave (puissance de 2) puis ajustement fin
+        // en Hz, appliques ici - le lissage qui suit lisse donc la
+        // frequence DEJA transposee.
+        targetFreq *= std::pow(2.f, (float)mOctaveShift);
+        targetFreq += mFineTuneHz;
+        targetFreq = std::max(targetFreq, 0.f);
+
         // Amplitude ABSOLUE (pas relative au pic dominant de CE hop) -
         // reconstruit le vrai niveau du signal d'origine, en compensant
         // le gain de la fenetre Hann (gain coherent ~0.5) et la taille
@@ -221,6 +237,9 @@ private:
   float mFreqSmoothCoeff = 0.5f;
   float mFreqSmoothMs = 15.f; // reglable, defaut = ancien comportement
   float mHopDurationMs = 10.f;
+  int mOctaveShift = 0;
+  float mFineTuneHz = 0.f;
+  float mVolume = 1.f;
 
   std::atomic<bool> mCapturing { false };
 
