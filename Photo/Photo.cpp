@@ -208,7 +208,7 @@ void Photo::ProcessBlock(sample** inputs, sample** outputs, int nFrames)
 
   for (int i = 0; i < n; i++)
   {
-    float sample = mTestOsc.Process(mEngine) + mSnapshot.Synthesize();
+    float sample = mTestOsc.Process(mEngine) + mSnapshot.Synthesize(mEngine);
     outputs[0][i] = sample;
     outputs[1][i] = sample;
   }

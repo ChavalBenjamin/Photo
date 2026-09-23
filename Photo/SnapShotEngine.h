@@ -5,6 +5,7 @@
 #include <cmath>
 #include <algorithm>
 #include <atomic>
+#include "WavetableEngine.h"
 
 // ============================================================================
 // SnapshotEngine
@@ -76,15 +77,32 @@ public:
 
   // Resynthese additive : un echantillon a la fois, somme des 10
   // oscillateurs (frequence/amplitude figees ou en direct selon l'etat).
-  float Synthesize()
+  // Lit la MEME table d'onde (forme + harmoniques + Skew) que le reste
+  // du moteur, une fois par voix captee - a sa propre hauteur, a sa
+  // propre amplitude. La table reste la SEULE source de timbre ; la
+  // capture FFT ne fournit que hauteur+volume pour chacune des 10 voix
+  // (comme un fiddle~ pilotant 10 lectures de la meme table dans Pure
+  // Data).
+  float Synthesize(const WavetableEngine& engine)
   {
+    const float* table = engine.GetTable();
+    int size = engine.GetTableSize();
+
     float sum = 0.f;
     for (int p = 0; p < kMaxPeaks; p++)
     {
       if (mPeakAmpSmooth[p] < 0.0001f) { mPeakPhase[p] = 0.f; continue; }
-      sum += mPeakAmpSmooth[p] * std::sin(mPeakPhase[p]);
-      mPeakPhase[p] += 2.f * kPi * mPeakFreqSmooth[p] / (float)mSampleRate;
-      if (mPeakPhase[p] >= 2.f * kPi) mPeakPhase[p] -= 2.f * kPi;
+
+      float pos = mPeakPhase[p] * (float)size;
+      int idx0 = (int)pos;
+      int idx1 = (idx0 + 1) % size;
+      float frac = pos - (float)idx0;
+      float tableSample = table[idx0] * (1.f - frac) + table[idx1] * frac;
+
+      sum += mPeakAmpSmooth[p] * tableSample;
+
+      mPeakPhase[p] += mPeakFreqSmooth[p] / (float)mSampleRate; // phase 0..1
+      if (mPeakPhase[p] >= 1.f) mPeakPhase[p] -= 1.f;
     }
     return sum;
   }
@@ -133,7 +151,13 @@ private:
       if (p < (int)candidates.size())
       {
         targetFreq = (float)candidates[p].bin * (float)mSampleRate / (float)mFFTSize;
-        targetAmp = candidates[p].mag / maxMag; // normalise 0..1 relatif au pic dominant
+        // Amplitude ABSOLUE (pas relative au pic dominant de CE hop) -
+        // reconstruit le vrai niveau du signal d'origine, en compensant
+        // le gain de la fenetre Hann (gain coherent ~0.5) et la taille
+        // FFT. Un murmure reste faible, un son fort reste fort.
+        constexpr float kWindowCoherentGain = 0.5f;
+        targetAmp = (2.f * candidates[p].mag) / ((float)mFFTSize * kWindowCoherentGain);
+        targetAmp = std::clamp(targetAmp, 0.f, 2.f); // securite, evite un pic aberrant
       }
       mPeakFreqSmooth[p] += (targetFreq - mPeakFreqSmooth[p]) * mSmoothCoeff;
       mPeakAmpSmooth[p] += (targetAmp - mPeakAmpSmooth[p]) * mSmoothCoeff;
