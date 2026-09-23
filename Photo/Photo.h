@@ -19,6 +19,7 @@ enum EParams
 {
   kParamBaseShape = 0, // 0=Sine, 1=Saw, 2=Triangle, 3=Square
   kParamSkew,          // 0-100% (0.5 = neutre)
+  kParamFreqSmooth,    // 0-50 ms : lissage de la frequence captee (Photo)
   kParamHarmonic1,
   kParamHarmonic2,
   kParamHarmonic3,
@@ -67,6 +68,11 @@ private:
 #if IPLUG_DSP
   void UpdateEngine();
 
+  // Protege le moteur : RebuildIfNeeded() (thread principal, a chaque
+  // changement de potard Harm/Skew) ne doit jamais s'executer en meme
+  // temps que la lecture de la table (thread audio, dans ProcessBlock) -
+  // meme lecon que sur les projets Spectral, oubliee ici au depart.
+  std::mutex mEngineMutex;
   WavetableEngine mEngine;
   // Test monophonique simple pour cette etape - le vrai systeme
   // polyphonique (12 voix) viendra plus tard.

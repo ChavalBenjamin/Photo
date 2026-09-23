@@ -48,6 +48,7 @@ Photo::Photo(const InstanceInfo& info)
 {
   GetParam(kParamBaseShape)->InitEnum("Forme", 0, 4, "", IParam::kFlagsNone, "", "Sinus", "Saw", "Triangle", "Carre");
   GetParam(kParamSkew)->InitPercentage("Skew", 50.);
+  GetParam(kParamFreqSmooth)->InitDouble("Lissage Freq", 15., 0., 50., 0.1, "ms");
 
   for (int h = 0; h < WavetableEngine::kNumHarmonics; h++)
   {
@@ -73,13 +74,15 @@ Photo::Photo(const InstanceInfo& info)
 
     // --- Forme de base, Skew, bouton photo ---
     IRECT topRow = bounds.GetFromTop(100.f).GetPadded(-10.f);
-    mParamControls[kParamBaseShape] = new IVMenuButtonControl(topRow.GetGridCell(0, 0, 1, 3).GetCentredInside(160.f, 44.f), kParamBaseShape, "Forme de base");
+    mParamControls[kParamBaseShape] = new IVMenuButtonControl(topRow.GetGridCell(0, 0, 1, 4).GetCentredInside(160.f, 44.f), kParamBaseShape, "Forme de base");
     pGraphics->AttachControl(mParamControls[kParamBaseShape]);
-    mParamControls[kParamSkew] = new IVKnobControl(topRow.GetGridCell(0, 1, 1, 3).GetCentredInside(64.f), kParamSkew, "Skew", knobStyle);
+    mParamControls[kParamSkew] = new IVKnobControl(topRow.GetGridCell(0, 1, 1, 4).GetCentredInside(64.f), kParamSkew, "Skew", knobStyle);
     pGraphics->AttachControl(mParamControls[kParamSkew]);
+    mParamControls[kParamFreqSmooth] = new IVKnobControl(topRow.GetGridCell(0, 2, 1, 4).GetCentredInside(64.f), kParamFreqSmooth, "Lissage Freq", knobStyle);
+    pGraphics->AttachControl(mParamControls[kParamFreqSmooth]);
 
 #if IPLUG_DSP
-    pGraphics->AttachControl(new PhotoButtonControl(topRow.GetGridCell(0, 2, 1, 3).GetCentredInside(140.f, 50.f), &mSnapshot));
+    pGraphics->AttachControl(new PhotoButtonControl(topRow.GetGridCell(0, 3, 1, 4).GetCentredInside(140.f, 50.f), &mSnapshot));
 #endif
 
     // --- 16 harmoniques, en 2 rangees de 8 ---
@@ -151,7 +154,10 @@ void Photo::UpdateEngine()
     mEngine.SetHarmonicAmp(h, amp);
   }
 
-  mEngine.RebuildIfNeeded();
+  {
+    std::lock_guard<std::mutex> lock(mEngineMutex);
+    mEngine.RebuildIfNeeded();
+  }
 
   const float* table = mEngine.GetTable();
   int size = mEngine.GetTableSize();
@@ -204,13 +210,17 @@ void Photo::ProcessBlock(sample** inputs, sample** outputs, int nFrames)
   for (int i = 0; i < n; i++)
     bufMono[i] = (float)inputs[0][i];
 
+  mSnapshot.SetFreqSmoothMs((float)GetParam(kParamFreqSmooth)->Value());
   mSnapshot.Feed(bufMono, n);
 
-  for (int i = 0; i < n; i++)
   {
-    float sample = mTestOsc.Process(mEngine) + mSnapshot.Synthesize(mEngine);
-    outputs[0][i] = sample;
-    outputs[1][i] = sample;
+    std::lock_guard<std::mutex> lock(mEngineMutex);
+    for (int i = 0; i < n; i++)
+    {
+      float sample = mTestOsc.Process(mEngine) + mSnapshot.Synthesize(mEngine);
+      outputs[0][i] = sample;
+      outputs[1][i] = sample;
+    }
   }
 }
 

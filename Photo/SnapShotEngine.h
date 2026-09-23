@@ -47,9 +47,19 @@ public:
     mWritePos = 0;
     mSamplesUntilHop = mHopSize;
 
-    // Lissage des pics (evite le "zipper" d'un hop a l'autre).
-    float hopMs = (float)mHopSize / (float)mSampleRate * 1000.f;
-    mSmoothCoeff = 1.f - std::exp(-hopMs / kSmoothMs);
+    // Lissage des pics (evite le "zipper" d'un hop a l'autre). Amplitude
+    // : fixe. Frequence : reglable via SetFreqSmoothMs().
+    mHopDurationMs = (float)mHopSize / (float)mSampleRate * 1000.f;
+    mAmpSmoothCoeff = 1.f - std::exp(-mHopDurationMs / kAmpSmoothMs);
+    RecomputeFreqSmoothCoeff();
+  }
+
+  // 0 = brut, saute instantanement (effet "escalier" audible, en
+  // escalier de hauteur) - plus haut = glissement plus doux.
+  void SetFreqSmoothMs(float ms)
+  {
+    mFreqSmoothMs = std::clamp(ms, 0.f, 50.f);
+    RecomputeFreqSmoothCoeff();
   }
 
   // Thread-safe : appele depuis l'UI (clic sur le bouton photo).
@@ -159,9 +169,15 @@ private:
         targetAmp = (2.f * candidates[p].mag) / ((float)mFFTSize * kWindowCoherentGain);
         targetAmp = std::clamp(targetAmp, 0.f, 2.f); // securite, evite un pic aberrant
       }
-      mPeakFreqSmooth[p] += (targetFreq - mPeakFreqSmooth[p]) * mSmoothCoeff;
-      mPeakAmpSmooth[p] += (targetAmp - mPeakAmpSmooth[p]) * mSmoothCoeff;
+      mPeakFreqSmooth[p] += (targetFreq - mPeakFreqSmooth[p]) * mFreqSmoothCoeff;
+      mPeakAmpSmooth[p] += (targetAmp - mPeakAmpSmooth[p]) * mAmpSmoothCoeff;
     }
+  }
+
+  void RecomputeFreqSmoothCoeff()
+  {
+    // ms<=0 : saut instantane, pas de division par zero.
+    mFreqSmoothCoeff = (mFreqSmoothMs <= 0.001f) ? 1.f : (1.f - std::exp(-mHopDurationMs / mFreqSmoothMs));
   }
 
   static void FFT(std::vector<cplx>& a, bool invert)
@@ -194,14 +210,17 @@ private:
   }
 
   static constexpr float kPi = 3.14159265358979323846f;
-  static constexpr float kSmoothMs = 15.f;
+  static constexpr float kAmpSmoothMs = 15.f; // amplitude : fixe
 
   int mFFTSize = 2048;
   int mHopSize = 512;
   int mSamplesUntilHop = 512;
   int mWritePos = 0;
   double mSampleRate = 44100.0;
-  float mSmoothCoeff = 0.5f;
+  float mAmpSmoothCoeff = 0.5f;
+  float mFreqSmoothCoeff = 0.5f;
+  float mFreqSmoothMs = 15.f; // reglable, defaut = ancien comportement
+  float mHopDurationMs = 10.f;
 
   std::atomic<bool> mCapturing { false };
 
