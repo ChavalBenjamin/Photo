@@ -1,35 +1,77 @@
 #pragma once
 
 #include "IPlug_include_in_plug_hdr.h"
+#include "WavetableEngine.h"
+#include "SpectralCurvePreviewControl.h"
+#include <atomic>
+#include <mutex>
 
-const int kNumPresets = 1;
+// ============================================================================
+// Photo - Etape 1 : moteur de table d'onde seul (forme de base + 16
+// harmoniques), avec visualisation/dessin, et lecture test via MIDI
+// (mecanisme temporaire - le vrai systeme a 12 boutons + capture FFT
+// viendra dans une etape separee).
+// ============================================================================
 
 enum EParams
 {
-  kParamGain = 0,
+  kParamBaseShape = 0, // 0=Sine, 1=Saw, 2=Triangle, 3=Square
+  kParamHarmonic1,
+  kParamHarmonic2,
+  kParamHarmonic3,
+  kParamHarmonic4,
+  kParamHarmonic5,
+  kParamHarmonic6,
+  kParamHarmonic7,
+  kParamHarmonic8,
+  kParamHarmonic9,
+  kParamHarmonic10,
+  kParamHarmonic11,
+  kParamHarmonic12,
+  kParamHarmonic13,
+  kParamHarmonic14,
+  kParamHarmonic15,
+  kParamHarmonic16,
   kNumParams
-};
-
-enum ECtrlTags
-{
-  kCtrlTagVersionNumber = 0,
-  kCtrlTagSlider,
-  kCtrlTagTitle
 };
 
 using namespace iplug;
 using namespace igraphics;
 
-class Photo final : public Plugin
+class Photo final : public iplug::Plugin
 {
 public:
   Photo(const InstanceInfo& info);
 
-#if IPLUG_EDITOR
-  bool OnHostRequestingSupportedViewConfiguration(int width, int height) override { return true; }
-#endif
-  
-#if IPLUG_DSP // http://bit.ly/2S64BDd
+  void OnIdle() override;
+  void OnUIOpen() override { SyncUIToState(); }
+  void OnUIClose() override { mWaveView = nullptr; for (auto& c : mParamControls) c = nullptr; }
+
+#if IPLUG_DSP
   void ProcessBlock(sample** inputs, sample** outputs, int nFrames) override;
+  void ProcessMidiMsg(const IMidiMsg& msg) override;
+  void OnParamChange(int paramIdx) override;
+  void OnReset() override;
+#endif
+
+private:
+  SpectralCurvePreviewControl* mWaveView = nullptr;
+  IControl* mParamControls[kNumParams] = { nullptr };
+
+  void ApplyAllState();
+  void SyncUIToState();
+
+#if IPLUG_DSP
+  void UpdateEngine();
+
+  WavetableEngine mEngine;
+  // Test monophonique simple pour cette etape - le vrai systeme
+  // polyphonique (12 voix) viendra plus tard.
+  WavetableOscillator mTestOsc;
+
+  std::mutex mWaveUIMutex;
+  std::atomic<bool> mWaveUIUpdated { false };
+  float mWaveUIBuf[WavetableEngine::kTableSize];
+  int mWaveUISize = 0;
 #endif
 };
