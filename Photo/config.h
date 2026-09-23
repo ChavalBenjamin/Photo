@@ -1,16 +1,16 @@
 #define PLUG_NAME "Photo"
-#define PLUG_MFR "AcmeInc"
+#define PLUG_MFR "BEnjaminChaval"
 #define PLUG_VERSION_HEX 0x00000000
 #define PLUG_VERSION_STR "0.0.0"
 #define PLUG_UNIQUE_ID 'Foto'
-#define PLUG_MFR_ID 'Acme'
+#define PLUG_MFR_ID 'BnCh'
 #define PLUG_URL_STR "https://iplug2.github.io"
 #define PLUG_EMAIL_STR "spam@me.com"
 #define PLUG_COPYRIGHT_STR "Copyright 2025 Acme Inc"
 #define PLUG_CLASS_NAME Photo
 
 #define BUNDLE_NAME "Photo"
-#define BUNDLE_MFR "AcmeInc"
+#define BUNDLE_MFR "BEnjaminChaval"
 #define BUNDLE_DOMAIN "com"
 
 #define SHARED_RESOURCES_SUBPATH "Photo"

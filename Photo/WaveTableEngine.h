@@ -40,6 +40,19 @@ public:
     mDirty = true;
   }
 
+  // Distorsion de phase (a la Casio CZ) : 0.5 = neutre, ailleurs = un
+  // point de la table se lit plus lentement (compresse), l'autre plus
+  // vite (etire) - deforme QUAND chaque partie se joue, jamais son
+  // amplitude. S'applique a la forme de base ET aux harmoniques
+  // ensemble (meme phase deformee pour toutes).
+  void SetSkew(float skew)
+  {
+    skew = std::clamp(skew, 0.001f, 0.999f);
+    if (mSkew == skew) return;
+    mSkew = skew;
+    mDirty = true;
+  }
+
   const float* GetTable() const { return mTable.data(); }
   int GetTableSize() const { return kTableSize; }
 
@@ -53,11 +66,13 @@ public:
 
     for (int i = 0; i < kTableSize; i++)
     {
-      float phase = (float)i / (float)kTableSize; // 0..1
+      float rawPhase = (float)i / (float)kTableSize; // 0..1
+      float phase = WarpPhase(rawPhase);
       float y = GetBaseShapeSample(phase);
 
       // Harmoniques 2 a 17 (l'harmonique 1/fondamentale est deja portee
-      // par la forme de base elle-meme) - sinus purs, ajoutes par-dessus.
+      // par la forme de base elle-meme) - sinus purs, ajoutes par-dessus,
+      // meme phase deformee (Skew) que la forme de base.
       for (int h = 0; h < kNumHarmonics; h++)
       {
         if (mHarmonicAmps[h] <= 0.0001f) continue;
@@ -77,6 +92,17 @@ public:
   }
 
 private:
+  // Point de rupture "skew" : avant, la portion 0..skew de la table se
+  // lit compressee dans la premiere moitie ; apres, la portion skew..1
+  // s'etire dans la seconde moitie. A skew=0.5, identite exacte.
+  float WarpPhase(float phase) const
+  {
+    if (phase < mSkew)
+      return phase * (0.5f / mSkew);
+    else
+      return 0.5f + (phase - mSkew) * (0.5f / (1.f - mSkew));
+  }
+
   float GetBaseShapeSample(float phase) const
   {
     switch (mBaseShape)
@@ -95,6 +121,7 @@ private:
 
   BaseShape mBaseShape = BaseShape::Sine;
   float mHarmonicAmps[kNumHarmonics] = { 0.f };
+  float mSkew = 0.5f; // neutre par defaut
   bool mDirty = true;
   std::vector<float> mTable;
 };

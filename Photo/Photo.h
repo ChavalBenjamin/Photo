@@ -2,20 +2,23 @@
 
 #include "IPlug_include_in_plug_hdr.h"
 #include "WavetableEngine.h"
+#include "SnapshotEngine.h"
 #include "SpectralCurvePreviewControl.h"
 #include <atomic>
 #include <mutex>
 
 // ============================================================================
-// Photo - Etape 1 : moteur de table d'onde seul (forme de base + 16
-// harmoniques), avec visualisation/dessin, et lecture test via MIDI
-// (mecanisme temporaire - le vrai systeme a 12 boutons + capture FFT
-// viendra dans une etape separee).
+// Photo - Etape 1+2 : moteur de table d'onde (forme de base + 16
+// harmoniques + Skew), avec visualisation/dessin, lecture test via MIDI,
+// et un premier bouton "photo" (capture FFT en direct, gel au
+// relachement) - le vrai systeme a 12 boutons viendra dans une etape
+// separee, ceci est la preuve de concept a une seule voix.
 // ============================================================================
 
 enum EParams
 {
   kParamBaseShape = 0, // 0=Sine, 1=Saw, 2=Triangle, 3=Square
+  kParamSkew,          // 0-100% (0.5 = neutre)
   kParamHarmonic1,
   kParamHarmonic2,
   kParamHarmonic3,
@@ -68,6 +71,9 @@ private:
   // Test monophonique simple pour cette etape - le vrai systeme
   // polyphonique (12 voix) viendra plus tard.
   WavetableOscillator mTestOsc;
+
+  // Premiere voix "photo" - preuve de concept, une seule pour l'instant.
+  SnapshotEngine mSnapshot;
 
   std::mutex mWaveUIMutex;
   std::atomic<bool> mWaveUIUpdated { false };
