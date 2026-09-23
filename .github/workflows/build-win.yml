@@ -22,9 +22,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        project: [TemplateProject]
+        project: [Photo]
         # Add more projects here:
-        # project: [TemplateProject, VisageTemplate]
+        # project: [Photo, VisageTemplate]
 
     steps:
     - name: Check out repository
@@ -122,9 +122,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        project: [TemplateProject]
+        project: [Photo]
         # Add more projects here:
-        # project: [TemplateProject, VisageTemplate]
+        # project: [Photo, VisageTemplate]
 
     steps:
       - name: Download artifact

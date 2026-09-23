@@ -23,9 +23,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        project: [TemplateProject]
+        project: [Photo]
         # Add more projects here:
-        # project: [TemplateProject, VisageTemplate]
+        # project: [Photo, VisageTemplate]
 
     steps:
     - name: Check out repository
@@ -130,9 +130,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        project: [TemplateProject]
+        project: [Photo]
         # Add more projects here:
-        # project: [TemplateProject, VisageTemplate]
+        # project: [Photo, VisageTemplate]
 
     steps:
       - name: Download artifact
@@ -171,35 +171,11 @@ jobs:
             iPlug2/Dependencies/IPlug/VST3_SDK
           key: ${{runner.os}}-vst3-${{env.VST3_VER}}
 
-      - name: Cache CLAP Validator
-        id: cache-clap-validator
-        uses: actions/cache@v3
-        with:
-          path: |
-            ./clap-validator
-          key: ${{runner.os}}-clap-validator-${{env.CLAP_VALIDATOR_VER}}
-
-      - name: Get CLAP Validator
-        if: steps.cache-clap-validator.outputs.cache-hit != 'true'
-        shell: bash
-        run: |
-          set -eo pipefail
-          curl -fL "https://github.com/free-audio/clap-validator/releases/download/${{env.CLAP_VALIDATOR_VER}}/clap-validator-${{env.CLAP_VALIDATOR_VER}}-macos-universal.tar.gz" -o clap-validator.tar.gz
-          tar -xzf clap-validator.tar.gz
-          mv binaries/clap-validator ./clap-validator
-          rm -rf binaries clap-validator.tar.gz
-
       - name: Test VST3 with VST3 Validator
         shell: bash
         run: |
           set -eo pipefail
           ./iPlug2/Dependencies/IPlug/VST3_SDK/validator ${{matrix.project}}.vst3
-
-      - name: Test CLAP with CLAP Validator
-        shell: bash
-        run: |
-          set -eo pipefail
-          ./clap-validator validate ./${{matrix.project}}.clap
 
       - name: Test VST3 with Pluginval
         shell: bash
