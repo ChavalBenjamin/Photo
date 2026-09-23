@@ -126,13 +126,17 @@ void Photo::OnParamChange(int paramIdx)
 void Photo::ProcessMidiMsg(const IMidiMsg& msg)
 {
   // NOTE : premiere utilisation de l'API MIDI dans ce projet - IMidiMsg
-  // et IMidiMsg::NoteNumberToFrequency n'ont jamais ete verifies dans
-  // aucun des projets precedents, a confirmer a la compilation.
+  // lui-meme confirme fonctionnel, mais NoteNumberToFrequency n'existait
+  // pas - remplace par le calcul standard directement (formule
+  // universelle, aucune dependance a une methode iPlug2 specifique).
   switch (msg.StatusMsg())
   {
     case IMidiMsg::kNoteOn:
       if (msg.Velocity() > 0)
-        mTestOsc.NoteOn((float)IMidiMsg::NoteNumberToFrequency(msg.NoteNumber()));
+      {
+        float freq = 440.f * std::pow(2.f, ((float)msg.NoteNumber() - 69.f) / 12.f);
+        mTestOsc.NoteOn(freq);
+      }
       else
         mTestOsc.NoteOff(); // certains claviers envoient NoteOn velocite 0 au lieu de NoteOff
       break;
