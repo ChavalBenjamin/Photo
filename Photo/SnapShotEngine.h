@@ -287,6 +287,7 @@ public:
     }
     mEnv.Reset();
     mNote = -1;
+    mPitchRatio = 1.f;
   }
 
   // ---- Reglages (appeles a chaque bloc) ----
@@ -356,8 +357,15 @@ public:
   // velGain : 0..1, deja calcule a partir de la velocite.
   void NoteOn(const PeakAnalyzer& an, int note, float velGain, uint32_t age)
   {
-    const SpectralPeak* pk = an.Peaks();
-    const int n = an.NumPeaks();
+    NoteOnPhoto(an.Peaks(), an.NumPeaks(), 1.f, note, velGain, age);
+  }
+
+  // Joue une photo donnee (pics deja analyses, ou gardes en memoire),
+  // TRANSPOSEE : toutes les frequences sont multipliees par pitchRatio
+  // (1 = hauteur d'origine, 1.5 = quinte juste au-dessus...).
+  void NoteOnPhoto(const SpectralPeak* pk, int n, float pitchRatio, int note, float velGain, uint32_t age)
+  {
+    n = std::min(n, kMaxPeaks);
     for (int p = 0; p < kMaxPeaks; p++)
     {
       const bool has = p < n;
@@ -365,10 +373,22 @@ public:
       mTgtAmp[p] = mAmpCur[p] = has ? pk[p].amp : 0.f; // l'ADSR gere l'attaque
       mPeakPhase[p] = mPeakPhaseR[p] = 0.f;
     }
+    mPitchRatio = std::max(pitchRatio, 0.f);
     mNote = note;
     mVelGain = std::clamp(velGain, 0.f, 1.f);
     mAge = age;
     mEnv.GateOn();
+  }
+
+  // Tant que le bouton "Photo" est maintenu (mode Relatif), toutes les voix
+  // qui sonnent suivent le son d'entree EN DIRECT : ce sont des fenetres
+  // sur le son reel, chacune a sa hauteur.
+  void FollowLive(const PeakAnalyzer& an)
+  {
+    if (mEnv.IsIdle()) return;
+    if (an.HopId() == mLastHopId) return;
+    mLastHopId = an.HopId();
+    TrackPeaks(an.Peaks(), an.NumPeaks(), an.BinHz());
   }
 
   // Mode Synthe : pas de photo, la voix joue simplement la table d'onde
@@ -383,6 +403,7 @@ public:
       mTgtAmp[p] = mAmpCur[p] = first ? amp : 0.f;
       mPeakPhase[p] = mPeakPhaseR[p] = 0.f;
     }
+    mPitchRatio = 1.f;
     mNote = note;
     mVelGain = std::clamp(velGain, 0.f, 1.f);
     mAge = age;
@@ -428,7 +449,7 @@ public:
 
       if (mAmpCur[p] < 0.00001f && mTgtAmp[p] <= 0.f) { mPeakPhase[p] = 0.f; mPeakPhaseR[p] = 0.f; continue; }
 
-      const float freqL = mFreqCur[p] * mOctaveRatioSmooth + mFineHzSmooth;
+      const float freqL = mFreqCur[p] * mPitchRatio * mOctaveRatioSmooth + mFineHzSmooth;
       const float freqR = freqL + mStereoHzSmooth;
 
       if (freqL > 0.f && freqL < nyquist) // garde-fou : evite repliement / depassement de table
@@ -533,6 +554,7 @@ private:
   Adsr mEnv;
   bool mUseEnv = false;
   float mVelGain = 1.f;
+  float mPitchRatio = 1.f; // transposition de la photo (mode Relatif)
   int mNote = -1;
   uint32_t mAge = 0;
 

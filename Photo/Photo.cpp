@@ -44,6 +44,63 @@ private:
   bool mPressed = false;
 };
 
+// ----------------------------------------------------------------------
+// Mode Relatif : gros bouton "PHOTO" (maintenu = analyse en direct, relache
+// = la derniere analyse est gardee en memoire) et bouton "CORBEILLE" (vide
+// la memoire). Ce sont de VRAIS parametres : REAPER les voit et peut leur
+// assigner un CC, une note ou une automation.
+// ----------------------------------------------------------------------
+class MomentaryParamButton : public IControl
+{
+public:
+  MomentaryParamButton(const IRECT& bounds, int paramIdx) : IControl(bounds, paramIdx) {}
+
+  void OnMouseDown(float x, float y, const IMouseMod& mod) override { SetValue(1.); SetDirty(true); }
+  void OnMouseUp(float x, float y, const IMouseMod& mod) override { SetValue(0.); SetDirty(true); }
+
+protected:
+  bool Pressed() const { return GetValue() > 0.5; }
+};
+
+class PhotoHoldControl : public MomentaryParamButton
+{
+public:
+  PhotoHoldControl(const IRECT& bounds, int paramIdx, const std::atomic<bool>* memFull)
+  : MomentaryParamButton(bounds, paramIdx), mMemFull(memFull) {}
+
+  void Draw(IGraphics& g) override
+  {
+    const bool full = mMemFull && mMemFull->load();
+    IColor fill = Pressed() ? IColor(255, 235, 70, 60)          // maintenu : rouge vif
+                : full      ? IColor(255, 232, 180, 90)        // memoire pleine : ambre
+                            : IColor(255, 70, 70, 80);         // memoire vide : gris
+    g.FillRoundRect(fill, mRECT, 10.f);
+    g.DrawRoundRect(COLOR_WHITE, mRECT, 10.f, nullptr, 2.f);
+    IText big(26.f, Pressed() || full ? COLOR_BLACK : COLOR_WHITE, "Roboto-Regular", EAlign::Center, EVAlign::Middle);
+    g.DrawText(big, "PHOTO", mRECT.GetFromTop(mRECT.H() * 0.65f));
+    IText small(12.f, Pressed() || full ? COLOR_BLACK : COLOR_LIGHT_GRAY, "Roboto-Regular", EAlign::Center, EVAlign::Middle);
+    g.DrawText(small, Pressed() ? "analyse en direct" : (full ? "en memoire" : "memoire vide"), mRECT.GetFromBottom(mRECT.H() * 0.35f));
+  }
+
+private:
+  const std::atomic<bool>* mMemFull;
+};
+
+class TrashControl : public MomentaryParamButton
+{
+public:
+  TrashControl(const IRECT& bounds, int paramIdx) : MomentaryParamButton(bounds, paramIdx) {}
+
+  void Draw(IGraphics& g) override
+  {
+    IColor fill = Pressed() ? IColor(255, 200, 80, 80) : IColor(255, 90, 60, 60);
+    g.FillRoundRect(fill, mRECT, 8.f);
+    g.DrawRoundRect(COLOR_WHITE, mRECT, 8.f);
+    IText txt(14.f, COLOR_WHITE, "Roboto-Regular", EAlign::Center, EVAlign::Middle);
+    g.DrawText(txt, "CORBEILLE", mRECT);
+  }
+};
+
 Photo::Photo(const InstanceInfo& info)
 : iplug::Plugin(info, MakeConfig(kNumParams, 1))
 {
@@ -60,7 +117,7 @@ Photo::Photo(const InstanceInfo& info)
 
   GetParam(kParamStereoHz)->InitDouble("Ecart D/G", 0., -10., 10., 0.01, "Hz");
 
-  GetParam(kParamMode)->InitEnum("Mode", 0, 3, "", IParam::kFlagsNone, "", "Boutons", "Clavier", "Synthe");
+  GetParam(kParamMode)->InitEnum("Mode", 0, 4, "", IParam::kFlagsNone, "", "Boutons", "Clavier", "Synthe", "Relatif");
   GetParam(kParamAttack)->InitDouble("Attaque", 5., 0., 2000., 0.1, "ms");
   GetParam(kParamDecay)->InitDouble("Decay", 200., 1., 5000., 0.1, "ms");
   GetParam(kParamSustain)->InitPercentage("Sustain", 80.);
@@ -70,6 +127,8 @@ Photo::Photo(const InstanceInfo& info)
   GetParam(kParamKbOctave)->InitEnum("Clavier Octave", 4, 9, "", IParam::kFlagsNone, "",
                                       "/16", "/8", "/4", "/2", "1", "x2", "x4", "x8", "x16");
   GetParam(kParamKbFine)->InitDouble("Clavier Fine", 0., -20., 20., 0.1, "Hz");
+  GetParam(kParamPhotoHold)->InitBool("Photo", false);
+  GetParam(kParamTrash)->InitBool("Corbeille", false);
 
   for (int v = 0; v < kNumVoices; v++)
   {
@@ -163,7 +222,20 @@ Photo::Photo(const InstanceInfo& info)
     pGraphics->AttachControl(mParamControls[kParamKbFine]);
 
     // --- Visualisation de la table d'onde (dessin a cabler plus tard) ---
-    IRECT waveArea = IRECT(bounds.L, kbRow.B, bounds.R, bounds.B).GetPadded(-20.f);
+    IRECT restArea = IRECT(bounds.L, kbRow.B, bounds.R, bounds.B).GetPadded(-20.f);
+    IRECT btnArea = restArea.GetFromRight(230.f);
+    IRECT waveArea = restArea.GetReducedFromRight(240.f);
+
+    // --- Mode Relatif : gros bouton Photo + Corbeille ---
+    const std::atomic<bool>* memFlag = nullptr;
+#if IPLUG_DSP
+    memFlag = &mMemValid;
+#endif
+    mPhotoBtn = new PhotoHoldControl(btnArea.GetFromTop(btnArea.H() * 0.68f).GetPadded(-4.f), kParamPhotoHold, memFlag);
+    mParamControls[kParamPhotoHold] = mPhotoBtn;
+    pGraphics->AttachControl(mPhotoBtn);
+    mParamControls[kParamTrash] = new TrashControl(btnArea.GetFromBottom(btnArea.H() * 0.32f).GetPadded(-4.f), kParamTrash);
+    pGraphics->AttachControl(mParamControls[kParamTrash]);
     mWaveView = new SpectralCurvePreviewControl(waveArea);
     pGraphics->AttachControl(mWaveView);
   };
@@ -177,6 +249,12 @@ Photo::Photo(const InstanceInfo& info)
 void Photo::OnIdle()
 {
 #if IPLUG_DSP
+  if (mPhotoBtn && mMemValid.load() != mMemShown)
+  {
+    mMemShown = mMemValid.load();
+    mPhotoBtn->SetDirty(false);
+  }
+
   if (mWaveView && mWaveUIUpdated.exchange(false))
   {
     mWaveView->SetCurve(mWaveUIBuf, mWaveUISize);
@@ -237,6 +315,11 @@ void Photo::OnReset()
 
 void Photo::OnParamChange(int paramIdx)
 {
+  // Boutons du mode Relatif : on note seulement l'etat, c'est le thread
+  // audio qui agit (ProcessBlock).
+  if (paramIdx == kParamPhotoHold) { mPhotoHeld.store(GetParam(kParamPhotoHold)->Value() > 0.5); return; }
+  if (paramIdx == kParamTrash) { if (GetParam(kParamTrash)->Value() > 0.5) mTrashEdge.store(true); return; }
+
   // Seuls ces parametres reconstruisent la table d'onde.
   if (paramIdx == kParamBaseShape || paramIdx == kParamSkew
       || (paramIdx >= kParamHarmonic1 && paramIdx <= kParamHarmonic16))
@@ -248,6 +331,14 @@ void Photo::OnParamChange(int paramIdx)
 static float NoteFrequency(int note)
 {
   return 440.f * std::pow(2.f, ((float)note - 69.f) / 12.f);
+}
+
+// Rapport de transposition d'une touche par rapport a la touche de reference
+// (MIDI 60 = photo telle quelle). Tempérament egal pour l'instant.
+// (Sera remplace par le tempérament choisi.)
+static float NoteRatio(int note)
+{
+  return std::pow(2.f, ((float)note - 60.f) / 12.f);
 }
 
 int Photo::AllocVoice()
@@ -263,7 +354,7 @@ int Photo::AllocVoice()
 
 void Photo::ProcessMidiMsg(const IMidiMsg& msg)
 {
-  const int mode = (int)GetParam(kParamMode)->Value(); // 0 Boutons, 1 Clavier, 2 Synthe
+  const int mode = (int)GetParam(kParamMode)->Value(); // 0 Boutons, 1 Clavier, 2 Synthe, 3 Relatif
 
   switch (msg.StatusMsg())
   {
@@ -278,6 +369,18 @@ void Photo::ProcessMidiMsg(const IMidiMsg& msg)
         const int v = AllocVoice();
         if (mode == 1)
           mSnapshots[v].NoteOn(mAnalyzer, msg.NoteNumber(), velGain, ++mVoiceCounter); // une photo figee par note
+        else if (mode == 3)
+        {
+          // Relatif : la photo est transposee selon la touche.
+          //  - bouton Photo maintenu : photo EN DIRECT (la voix la suit, voir ProcessBlock)
+          //  - sinon, memoire pleine : la photo gardee
+          //  - sinon : une photo figee prise a l'instant de la note
+          const float ratio = NoteRatio(msg.NoteNumber());
+          if (!mPhotoHeld.load() && mMemValid.load())
+            mSnapshots[v].NoteOnPhoto(mMem, mMemN, ratio, msg.NoteNumber(), velGain, ++mVoiceCounter);
+          else
+            mSnapshots[v].NoteOnPhoto(mAnalyzer.Peaks(), mAnalyzer.NumPeaks(), ratio, msg.NoteNumber(), velGain, ++mVoiceCounter);
+        }
         else
           mSnapshots[v].NoteOnTone(NoteFrequency(msg.NoteNumber()), kToneAmp, msg.NoteNumber(), velGain, ++mVoiceCounter);
         break;
@@ -313,7 +416,7 @@ void Photo::ProcessBlock(sample** inputs, sample** outputs, int nFrames)
 
   // Changement de mode : on coupe tout (sinon le son fige du mode Boutons
   // resterait audible au clavier, et inversement).
-  const int mode = (int)GetParam(kParamMode)->Value(); // 0 Boutons, 1 Clavier, 2 Synthe
+  const int mode = (int)GetParam(kParamMode)->Value(); // 0 Boutons, 1 Clavier, 2 Synthe, 3 Relatif
   const bool kbMode = (mode != 0); // Clavier et Synthe : voix au clavier, ADSR, reglages globaux
   if (mode != mLastMode)
   {
@@ -323,6 +426,18 @@ void Photo::ProcessBlock(sample** inputs, sample** outputs, int nFrames)
 
   // Analyse FFT UNIQUE, partagee par toutes les voix.
   mAnalyzer.Feed(mInBuf, n);
+
+  // Mode Relatif : corbeille, et memoire de la photo au relachement du bouton.
+  if (mTrashEdge.exchange(false)) { mMemValid.store(false); mMemN = 0; }
+  const bool held = (mode == 3) && mPhotoHeld.load();
+  if (mWasHeld && !held && mode == 3 && mAnalyzer.NumPeaks() > 0)
+  {
+    // Relachement : la DERNIERE analyse est gardee en memoire.
+    mMemN = mAnalyzer.NumPeaks();
+    for (int i = 0; i < mMemN; i++) mMem[i] = mAnalyzer.Peaks()[i];
+    mMemValid.store(true);
+  }
+  mWasHeld = held;
 
   const float stereoHz = (float)GetParam(kParamStereoHz)->Value();
   const float freqSmooth = (float)GetParam(kParamFreqSmooth)->Value();
@@ -349,6 +464,7 @@ void Photo::ProcessBlock(sample** inputs, sample** outputs, int nFrames)
     mSnapshots[v].SetEnvEnabled(kbMode);
     mSnapshots[v].SetAdsr(atk, dec, sus, rel);
     if (!kbMode) mSnapshots[v].Update(mAnalyzer);
+    else if (held) mSnapshots[v].FollowLive(mAnalyzer); // Photo maintenu : les notes en cours suivent le son reel
   }
 
   {

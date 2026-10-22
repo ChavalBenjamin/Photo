@@ -50,7 +50,7 @@ enum EParams
   // Ajoute APRES les parametres de voix pour ne pas decaler les indices
   // des projets deja enregistres.
   kParamStereoHz = kParamVoiceParamsStart + kNumVoices * 3, // ecart D/G en Hz (-10..+10)
-  kParamMode,      // 0 = Boutons (12 boutons / CC), 1 = Clavier (photo par note), 2 = Synthe (table d'onde)
+  kParamMode,      // 0 = Boutons (12 boutons / CC), 1 = Clavier (photo par note), 2 = Synthe (table d'onde), 3 = Relatif (photo transposee par la touche)
   kParamAttack,    // ADSR, mode Clavier (ms)
   kParamDecay,     // ms
   kParamSustain,   // %
@@ -59,6 +59,8 @@ enum EParams
   kParamKbVolume,  // reglages GLOBAUX du mode Clavier
   kParamKbOctave,
   kParamKbFine,
+  kParamPhotoHold, // mode Relatif : bouton Photo (maintenu = analyse en direct, relache = memoire)
+  kParamTrash,     // mode Relatif : vide la memoire
   kNumParams
 };
 
@@ -77,7 +79,7 @@ public:
 
   void OnIdle() override;
   void OnUIOpen() override { SyncUIToState(); }
-  void OnUIClose() override { mWaveView = nullptr; for (auto& c : mParamControls) c = nullptr; }
+  void OnUIClose() override { mWaveView = nullptr; mPhotoBtn = nullptr; for (auto& c : mParamControls) c = nullptr; }
 
 #if IPLUG_DSP
   void ProcessBlock(sample** inputs, sample** outputs, int nFrames) override;
@@ -88,6 +90,7 @@ public:
 
 private:
   SpectralCurvePreviewControl* mWaveView = nullptr;
+  IControl* mPhotoBtn = nullptr;
   IControl* mParamControls[kNumParams] = { nullptr };
 
   void ApplyAllState();
@@ -110,6 +113,16 @@ private:
   int AllocVoice();
   uint32_t mVoiceCounter = 0;
   int mLastMode = 0;
+
+  // Mode Relatif : photo gardee en memoire. Les pics ne sont touches que par
+  // le thread audio ; l'UI ne lit que le drapeau mMemValid.
+  std::atomic<bool> mPhotoHeld { false };
+  std::atomic<bool> mTrashEdge { false };
+  std::atomic<bool> mMemValid { false };
+  bool mWasHeld = false;
+  SpectralPeak mMem[PeakAnalyzer::kMaxPeaks];
+  int mMemN = 0;
+  bool mMemShown = false; // etat affiche par le bouton Photo (thread UI)
 
   // Tampon d'entree mono, propre a l'instance (pas partage entre instances).
   float mInBuf[8192];
