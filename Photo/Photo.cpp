@@ -106,7 +106,10 @@ Photo::Photo(const InstanceInfo& info)
 {
   GetParam(kParamBaseShape)->InitEnum("Forme", 0, 4, "", IParam::kFlagsNone, "", "Sinus", "Saw", "Triangle", "Carre");
   GetParam(kParamSkew)->InitPercentage("Skew", 50.);
-  GetParam(kParamFreqSmooth)->InitDouble("Lissage Freq", 0., 0., 50., 0.1, "ms");
+  // Obturateur : cadence des micro-photos tant qu'un bouton de capture est
+  // maintenu. 0 = a chaque analyse FFT (~11,6 ms) ; jusqu'a 2 s. Courbe
+  // exponentielle : plus de finesse du cote rapide.
+  GetParam(kParamFreqSmooth)->InitDouble("Obturateur", 0., 0., 2000., 0.1, "ms", IParam::kFlagsNone, "", IParam::ShapePowCurve(3.));
 
   for (int h = 0; h < WavetableEngine::kNumHarmonics; h++)
   {
@@ -165,7 +168,7 @@ Photo::Photo(const InstanceInfo& info)
     pGraphics->AttachControl(mParamControls[kParamBaseShape]);
     mParamControls[kParamSkew] = new IVKnobControl(topRow.GetGridCell(0, 1, 1, 4).GetCentredInside(64.f), kParamSkew, "Skew", knobStyle);
     pGraphics->AttachControl(mParamControls[kParamSkew]);
-    mParamControls[kParamFreqSmooth] = new IVKnobControl(topRow.GetGridCell(0, 2, 1, 4).GetCentredInside(64.f), kParamFreqSmooth, "Lissage Freq", knobStyle);
+    mParamControls[kParamFreqSmooth] = new IVKnobControl(topRow.GetGridCell(0, 2, 1, 4).GetCentredInside(64.f), kParamFreqSmooth, "Obturateur", knobStyle);
     pGraphics->AttachControl(mParamControls[kParamFreqSmooth]);
     mParamControls[kParamStereoHz] = new IVKnobControl(topRow.GetGridCell(0, 3, 1, 4).GetCentredInside(64.f), kParamStereoHz, "Ecart D/G", knobStyle);
     pGraphics->AttachControl(mParamControls[kParamStereoHz]);
@@ -440,7 +443,7 @@ void Photo::ProcessBlock(sample** inputs, sample** outputs, int nFrames)
   mWasHeld = held;
 
   const float stereoHz = (float)GetParam(kParamStereoHz)->Value();
-  const float freqSmooth = (float)GetParam(kParamFreqSmooth)->Value();
+  const float shutterMs = (float)GetParam(kParamFreqSmooth)->Value(); // le parametre "Obturateur"
   const float atk = (float)GetParam(kParamAttack)->Value();
   const float dec = (float)GetParam(kParamDecay)->Value();
   const float sus = (float)(GetParam(kParamSustain)->Value() / 100.0);
@@ -457,14 +460,15 @@ void Photo::ProcessBlock(sample** inputs, sample** outputs, int nFrames)
     float fineHz = kbMode ? kbFine : (float)GetParam(VoiceParam(v, kVoiceFine))->Value();
 
     mSnapshots[v].SetStereoOffsetHz(stereoHz);
-    mSnapshots[v].SetFreqSmoothMs(freqSmooth);
+    mSnapshots[v].SetShutterMs(shutterMs);
     mSnapshots[v].SetVolume(volume);
     mSnapshots[v].SetOctaveShift(octaveIdx - 4);
     mSnapshots[v].SetFineTuneHz(fineHz);
     mSnapshots[v].SetEnvEnabled(kbMode);
     mSnapshots[v].SetAdsr(atk, dec, sus, rel);
-    if (!kbMode) mSnapshots[v].Update(mAnalyzer);
-    else if (held) mSnapshots[v].FollowLive(mAnalyzer); // Photo maintenu : les notes en cours suivent le son reel
+    if (!kbMode) mSnapshots[v].Update(mAnalyzer, n);
+    else if (held) mSnapshots[v].FollowLive(mAnalyzer, n); // Photo maintenu : les notes en cours prennent des micro-photos du son reel
+    else mSnapshots[v].StopFollow();
   }
 
   {

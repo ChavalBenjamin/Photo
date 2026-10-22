@@ -29,7 +29,7 @@ enum EParams
 {
   kParamBaseShape = 0, // 0=Sine, 1=Saw, 2=Triangle, 3=Square
   kParamSkew,          // 0-100% (0.5 = neutre)
-  kParamFreqSmooth,    // 0-50 ms : lissage de la frequence captee
+  kParamFreqSmooth,    // "Obturateur" : cadence des micro-photos (0 = chaque analyse, jusqu a 2000 ms)
   kParamHarmonic1,
   kParamHarmonic2,
   kParamHarmonic3,

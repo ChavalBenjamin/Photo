@@ -288,6 +288,7 @@ public:
     mEnv.Reset();
     mNote = -1;
     mPitchRatio = 1.f;
+    mShutterArmed = false;
   }
 
   // ---- Reglages (appeles a chaque bloc) ----
@@ -342,13 +343,11 @@ public:
   void SetMidiCapture(bool on) { mCaptureMidi.store(on); }
 
   // A appeler a chaque bloc, APRES PeakAnalyzer::Feed : tant que la capture
-  // est active, suit les pics de la derniere analyse.
-  void Update(const PeakAnalyzer& an)
+  // est active, prend des micro-photos a la cadence de l'obturateur.
+  void Update(const PeakAnalyzer& an, int nFrames)
   {
-    if (an.HopId() == mLastHopId) return;
-    mLastHopId = an.HopId();
-    if (mCaptureMouse.load() || mCaptureMidi.load())
-      TrackPeaks(an.Peaks(), an.NumPeaks(), an.BinHz());
+    if (!(mCaptureMouse.load() || mCaptureMidi.load())) { mShutterArmed = false; return; }
+    TickShutter(an, nFrames);
   }
 
   // ---- Mode Clavier ----
@@ -374,6 +373,8 @@ public:
       mPeakPhase[p] = mPeakPhaseR[p] = 0.f;
     }
     mPitchRatio = std::max(pitchRatio, 0.f);
+    mShutterArmed = true; // la photo de la note est deja prise ; la suite suit l'obturateur
+    mShutterElapsed = 0.f;
     mNote = note;
     mVelGain = std::clamp(velGain, 0.f, 1.f);
     mAge = age;
@@ -381,14 +382,24 @@ public:
   }
 
   // Tant que le bouton "Photo" est maintenu (mode Relatif), toutes les voix
-  // qui sonnent suivent le son d'entree EN DIRECT : ce sont des fenetres
-  // sur le son reel, chacune a sa hauteur.
-  void FollowLive(const PeakAnalyzer& an)
+  // qui sonnent suivent le son d'entree : ce sont des fenetres sur le son
+  // reel, chacune a sa hauteur, au rythme de l'obturateur.
+  void FollowLive(const PeakAnalyzer& an, int nFrames)
   {
-    if (mEnv.IsIdle()) return;
-    if (an.HopId() == mLastHopId) return;
-    mLastHopId = an.HopId();
-    TrackPeaks(an.Peaks(), an.NumPeaks(), an.BinHz());
+    if (mEnv.IsIdle()) { mShutterArmed = false; return; }
+    TickShutter(an, nFrames);
+  }
+
+  // Bouton Photo relache : la prochaine pression prendra une photo tout de suite.
+  void StopFollow() { mShutterArmed = false; }
+
+  // Obturateur : intervalle entre deux micro-photos tant que le bouton est
+  // maintenu. 0 = une photo a chaque analyse FFT (cadence minimale, ~11,6 ms).
+  // Entre deux photos le son est stable ; les passages de l'une a l'autre sont
+  // lisses (frequence 5 ms, amplitude 20 ms).
+  void SetShutterMs(float ms)
+  {
+    mShutterSamples = (ms <= 0.f) ? 0.f : ms * 0.001f * (float)mSampleRate;
   }
 
   // Mode Synthe : pas de photo, la voix joue simplement la table d'onde
@@ -525,6 +536,37 @@ private:
       if (!used[s]) mTgtAmp[s] = 0.f;
   }
 
+  // Micro-photo : au premier appel apres l'appui, photo IMMEDIATE ; ensuite une
+  // photo a chaque analyse (obturateur 0) ou toutes les mShutterSamples.
+  void TickShutter(const PeakAnalyzer& an, int nFrames)
+  {
+    if (!mShutterArmed)
+    {
+      mShutterArmed = true;
+      mShutterElapsed = 0.f;
+      mLastHopId = an.HopId();
+      TrackPeaks(an.Peaks(), an.NumPeaks(), an.BinHz());
+      return;
+    }
+    if (mShutterSamples <= 0.f)
+    {
+      if (an.HopId() != mLastHopId)
+      {
+        mLastHopId = an.HopId();
+        TrackPeaks(an.Peaks(), an.NumPeaks(), an.BinHz());
+      }
+      return;
+    }
+    mShutterElapsed += (float)nFrames;
+    if (mShutterElapsed >= mShutterSamples)
+    {
+      mShutterElapsed -= mShutterSamples;
+      if (mShutterElapsed > mShutterSamples) mShutterElapsed = 0.f; // evite les rafales apres une pause
+      mLastHopId = an.HopId();
+      TrackPeaks(an.Peaks(), an.NumPeaks(), an.BinHz());
+    }
+  }
+
   void RecomputeCoeffs()
   {
     const float sr = (float)mSampleRate;
@@ -535,9 +577,12 @@ private:
 
   double mSampleRate = 44100.0;
   uint32_t mLastHopId = 0;
+  float mShutterSamples = 0.f;
+  float mShutterElapsed = 0.f;
+  bool mShutterArmed = false;
 
-  float mAmpSmoothMs = 10.f;
-  float mFreqSmoothMs = 0.f;
+  float mAmpSmoothMs = 20.f; // dynamique : 20 ms (comme le patch Pd)
+  float mFreqSmoothMs = 5.f; // frequence : 5 ms (comme le patch Pd)
   float mAmpCoeff = 0.01f;
   float mFreqCoeff = 1.f;
   float mTransposeCoeff = 0.01f;
