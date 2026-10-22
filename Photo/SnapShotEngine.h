@@ -5,7 +5,7 @@
 #include <cmath>
 #include <algorithm>
 #include <atomic>
-#include "WavetableEngine.h"
+#include "WaveTableEngine.h"
 
 // ============================================================================
 // SnapshotEngine
@@ -52,6 +52,12 @@ public:
     mHopDurationMs = (float)mHopSize / (float)mSampleRate * 1000.f;
     mAmpSmoothCoeff = 1.f - std::exp(-mHopDurationMs / kAmpSmoothMs);
     RecomputeFreqSmoothCoeff();
+
+    // Lissage par echantillon d'Octave/Fine (~5 ms) : evite les
+    // craquements quand on bouge le reglage, y compris sur un son gele.
+    mTransposeSmoothCoeff = 1.f - std::exp(-1.f / (0.005f * (float)mSampleRate));
+    mOctaveRatioSmooth = std::pow(2.f, (float)mOctaveShift);
+    mFineHzSmooth = mFineTuneHz;
   }
 
   // 0 = brut, saute instantanement (effet "escalier" audible, en
@@ -71,16 +77,18 @@ public:
   // Volume de cette voix (0-2, permet un peu de boost au-dela de l'unite).
   void SetVolume(float vol) { mVolume = std::clamp(vol, 0.f, 2.f); }
 
-  // Thread-safe : appele depuis l'UI (clic sur le bouton photo).
-  void StartCapture() { mCapturing.store(true); }
-  void StopCapture() { mCapturing.store(false); }
+  // Thread-safe. Deux sources independantes : la souris (bouton de l'UI)
+  // et le MIDI (CC). La capture est active des qu'UNE des deux est active.
+  void StartCapture() { mCaptureMouse.store(true); }
+  void StopCapture() { mCaptureMouse.store(false); }
+  void SetMidiCapture(bool on) { mCaptureMidi.store(on); }
 
   // Alimente l'analyse avec le son d'entree - a appeler en continu
   // depuis ProcessBlock, meme quand StopCapture (pour que le prochain
   // Start reparte avec un historique frais).
   void Feed(const float* in, int nFrames)
   {
-    bool capturing = mCapturing.load();
+    bool capturing = mCaptureMouse.load() || mCaptureMidi.load();
     for (int i = 0; i < nFrames; i++)
     {
       mRing[mWritePos] = in[i];
@@ -107,10 +115,21 @@ public:
     const float* table = engine.GetTable();
     int size = engine.GetTableSize();
 
+    // Octave et Fine sont appliques ICI, a chaque echantillon, sur les
+    // frequences brutes captees : ils agissent donc en direct, meme sur
+    // un son gele. Fine s'ajoute en Hz a chaque partiel (battements).
+    mOctaveRatioSmooth += (std::pow(2.f, (float)mOctaveShift) - mOctaveRatioSmooth) * mTransposeSmoothCoeff;
+    mFineHzSmooth += (mFineTuneHz - mFineHzSmooth) * mTransposeSmoothCoeff;
+    const float nyquist = (float)mSampleRate * 0.5f;
+
     float sum = 0.f;
     for (int p = 0; p < kMaxPeaks; p++)
     {
       if (mPeakAmpSmooth[p] < 0.0001f) { mPeakPhase[p] = 0.f; continue; }
+
+      float freq = mPeakFreqSmooth[p] * mOctaveRatioSmooth + mFineHzSmooth;
+      if (freq < 0.f) freq = 0.f;
+      if (freq >= nyquist) continue; // evite le repliement (x16 par ex.)
 
       float pos = mPeakPhase[p] * (float)size;
       int idx0 = (int)pos;
@@ -120,7 +139,7 @@ public:
 
       sum += mPeakAmpSmooth[p] * tableSample;
 
-      mPeakPhase[p] += mPeakFreqSmooth[p] / (float)mSampleRate; // phase 0..1
+      mPeakPhase[p] += freq / (float)mSampleRate; // phase 0..1
       if (mPeakPhase[p] >= 1.f) mPeakPhase[p] -= 1.f;
     }
     return sum * mVolume;
@@ -170,12 +189,8 @@ private:
       if (p < (int)candidates.size())
       {
         targetFreq = (float)candidates[p].bin * (float)mSampleRate / (float)mFFTSize;
-        // Transposition : octave (puissance de 2) puis ajustement fin
-        // en Hz, appliques ici - le lissage qui suit lisse donc la
-        // frequence DEJA transposee.
-        targetFreq *= std::pow(2.f, (float)mOctaveShift);
-        targetFreq += mFineTuneHz;
-        targetFreq = std::max(targetFreq, 0.f);
+        // Frequence BRUTE : la transposition (Octave, Fine) est
+        // appliquee plus tard, dans Synthesize().
 
         // Amplitude ABSOLUE (pas relative au pic dominant de CE hop) -
         // reconstruit le vrai niveau du signal d'origine, en compensant
@@ -240,8 +255,12 @@ private:
   int mOctaveShift = 0;
   float mFineTuneHz = 0.f;
   float mVolume = 1.f;
+  float mTransposeSmoothCoeff = 0.01f;
+  float mOctaveRatioSmooth = 1.f;
+  float mFineHzSmooth = 0.f;
 
-  std::atomic<bool> mCapturing { false };
+  std::atomic<bool> mCaptureMouse { false };
+  std::atomic<bool> mCaptureMidi { false };
 
   std::vector<float> mRing, mWindow;
   std::vector<cplx> mCplx;

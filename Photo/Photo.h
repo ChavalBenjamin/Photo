@@ -1,8 +1,8 @@
 #pragma once
 
 #include "IPlug_include_in_plug_hdr.h"
-#include "WavetableEngine.h"
-#include "SnapshotEngine.h"
+#include "WaveTableEngine.h"
+#include "SnapShotEngine.h"
 #include "SpectralCurvePreviewControl.h"
 #include <atomic>
 #include <mutex>
@@ -15,6 +15,12 @@
 // ============================================================================
 
 static constexpr int kNumVoices = 12;
+
+// Capture pilotable en MIDI : le CC (kCaptureCCBase + n) commande le bouton
+// de la voix n+1. Valeur 127 = capture en cours, toute autre valeur
+// (typiquement 0) = relache/gel. CC 20-31 : numeros libres du standard MIDI.
+// Tous canaux MIDI confondus.
+static constexpr int kCaptureCCBase = 20;
 
 enum EParams
 {

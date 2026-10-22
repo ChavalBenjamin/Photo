@@ -225,6 +225,14 @@ void Photo::ProcessMidiMsg(const IMidiMsg& msg)
     case IMidiMsg::kNoteOff:
       mTestOsc.NoteOff();
       break;
+    case IMidiMsg::kControlChange:
+    {
+      // CC 20..31 -> boutons de capture des voix 1..12 (127 = capture).
+      int v = (int)msg.ControlChangeIdx() - kCaptureCCBase;
+      if (v >= 0 && v < kNumVoices)
+        mSnapshots[v].SetMidiCapture(msg.mData2 >= 127);
+      break;
+    }
     default:
       break;
   }
@@ -243,6 +251,7 @@ void Photo::ProcessBlock(sample** inputs, sample** outputs, int nFrames)
     int octaveIdx = (int)GetParam(VoiceParam(v, kVoiceOctave))->Value(); // 0-8, 4 = neutre
     float fineHz = (float)GetParam(VoiceParam(v, kVoiceFine))->Value();
 
+    mSnapshots[v].SetFreqSmoothMs((float)GetParam(kParamFreqSmooth)->Value());
     mSnapshots[v].SetVolume(volume);
     mSnapshots[v].SetOctaveShift(octaveIdx - 4);
     mSnapshots[v].SetFineTuneHz(fineHz);
