@@ -281,8 +281,7 @@ public:
   {
     for (int p = 0; p < kMaxPeaks; p++)
     {
-      mTgtFreq[p] = mTgtAmp[p] = 0.f;
-      mFreqCur[p] = mAmpCur[p] = 0.f;
+      SetNow(p, 0.f, 0.f);
       mPeakPhase[p] = mPeakPhaseR[p] = 0.f;
     }
     mEnv.Reset();
@@ -368,8 +367,7 @@ public:
     for (int p = 0; p < kMaxPeaks; p++)
     {
       const bool has = p < n;
-      mTgtFreq[p] = mFreqCur[p] = has ? pk[p].freq : 0.f;
-      mTgtAmp[p] = mAmpCur[p] = has ? pk[p].amp : 0.f; // l'ADSR gere l'attaque
+      SetNow(p, has ? pk[p].freq : 0.f, has ? pk[p].amp : 0.f); // l'ADSR gere l'attaque
       mPeakPhase[p] = mPeakPhaseR[p] = 0.f;
     }
     mPitchRatio = std::max(pitchRatio, 0.f);
@@ -410,8 +408,7 @@ public:
     for (int p = 0; p < kMaxPeaks; p++)
     {
       const bool first = (p == 0);
-      mTgtFreq[p] = mFreqCur[p] = first ? freqHz : 0.f;
-      mTgtAmp[p] = mAmpCur[p] = first ? amp : 0.f;
+      SetNow(p, first ? freqHz : 0.f, first ? amp : 0.f);
       mPeakPhase[p] = mPeakPhaseR[p] = 0.f;
     }
     mPitchRatio = 1.f;
@@ -455,8 +452,10 @@ public:
     float sumL = 0.f, sumR = 0.f;
     for (int p = 0; p < kMaxPeaks; p++)
     {
-      mAmpCur[p] += (mTgtAmp[p] - mAmpCur[p]) * mAmpCoeff;
-      mFreqCur[p] += (mTgtFreq[p] - mFreqCur[p]) * mFreqCoeff;
+      // Rampes LINEAIRES (comme line~ dans Pd) : la valeur atteint sa cible
+      // EXACTEMENT apres mFreqSmoothMs / mAmpSmoothMs, puis s'y tient.
+      if (mAmpRemain[p] > 0) { mAmpCur[p] += mAmpStep[p]; if (--mAmpRemain[p] == 0) mAmpCur[p] = mTgtAmp[p]; }
+      if (mFreqRemain[p] > 0) { mFreqCur[p] += mFreqStep[p]; if (--mFreqRemain[p] == 0) mFreqCur[p] = mTgtFreq[p]; }
 
       if (mAmpCur[p] < 0.00001f && mTgtAmp[p] <= 0.f) { mPeakPhase[p] = 0.f; mPeakPhaseR[p] = 0.f; continue; }
 
@@ -523,17 +522,35 @@ private:
       if (best < 0) continue; // ne devrait pas arriver (<= 10 candidats pour 10 slots)
       used[best] = true;
       assigned[c] = best;
-      if (mAmpCur[best] < 0.001f) mFreqCur[best] = cand[c].freq; // nouveau partiel : pas de glissement depuis 0
+      if (mAmpCur[best] < 0.001f) { mFreqCur[best] = cand[c].freq; mFreqRemain[best] = 0; } // nouveau partiel : pas de glissement depuis 0
     }
     for (int c = 0; c < nCand; c++)
       if (assigned[c] >= 0)
-      {
-        mTgtFreq[assigned[c]] = cand[c].freq;
-        mTgtAmp[assigned[c]] = cand[c].amp;
-      }
+        SetTargets(assigned[c], cand[c].freq, cand[c].amp);
     // Slots sans pic ce hop : fondu vers 0 (la frequence reste, pour une sortie douce).
     for (int s = 0; s < kMaxPeaks; s++)
-      if (!used[s]) mTgtAmp[s] = 0.f;
+      if (!used[s] && mTgtAmp[s] > 0.f) SetTargets(s, mTgtFreq[s], 0.f);
+  }
+
+  // Nouvelle cible pour un partiel : rampe lineaire depuis la valeur courante.
+  void SetTargets(int p, float freq, float amp)
+  {
+    mTgtFreq[p] = freq;
+    mTgtAmp[p] = amp;
+    const int nf = std::max(1, (int)(mFreqSmoothMs * 0.001f * (float)mSampleRate));
+    const int na = std::max(1, (int)(mAmpSmoothMs * 0.001f * (float)mSampleRate));
+    mFreqStep[p] = (freq - mFreqCur[p]) / (float)nf;
+    mFreqRemain[p] = nf;
+    mAmpStep[p] = (amp - mAmpCur[p]) / (float)na;
+    mAmpRemain[p] = na;
+  }
+
+  // Valeur posee d'un coup, sans rampe (nouvelle note, remise a zero).
+  void SetNow(int p, float freq, float amp)
+  {
+    mTgtFreq[p] = mFreqCur[p] = freq;
+    mTgtAmp[p] = mAmpCur[p] = amp;
+    mFreqRemain[p] = mAmpRemain[p] = 0;
   }
 
   // Micro-photo : au premier appel apres l'appui, photo IMMEDIATE ; ensuite une
@@ -570,8 +587,6 @@ private:
   void RecomputeCoeffs()
   {
     const float sr = (float)mSampleRate;
-    mAmpCoeff = 1.f - std::exp(-1.f / (mAmpSmoothMs * 0.001f * sr));
-    mFreqCoeff = (mFreqSmoothMs <= 0.001f) ? 1.f : (1.f - std::exp(-1.f / (mFreqSmoothMs * 0.001f * sr)));
     mTransposeCoeff = 1.f - std::exp(-1.f / (0.005f * sr)); // Octave/Fine/Ecart : ~5 ms
   }
 
@@ -583,8 +598,6 @@ private:
 
   float mAmpSmoothMs = 20.f; // dynamique : 20 ms (comme le patch Pd)
   float mFreqSmoothMs = 5.f; // frequence : 5 ms (comme le patch Pd)
-  float mAmpCoeff = 0.01f;
-  float mFreqCoeff = 1.f;
   float mTransposeCoeff = 0.01f;
 
   int mOctaveShift = 0;
@@ -613,4 +626,9 @@ private:
   float mAmpCur[kMaxPeaks] = { 0.f };
   float mPeakPhase[kMaxPeaks] = { 0.f };  // phase gauche
   float mPeakPhaseR[kMaxPeaks] = { 0.f }; // phase droite
+  // Rampes lineaires vers les cibles (pas par echantillon, echantillons restants).
+  float mFreqStep[kMaxPeaks] = { 0.f };
+  float mAmpStep[kMaxPeaks] = { 0.f };
+  int mFreqRemain[kMaxPeaks] = { 0 };
+  int mAmpRemain[kMaxPeaks] = { 0 };
 };
