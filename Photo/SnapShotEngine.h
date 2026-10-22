@@ -66,8 +66,9 @@ public:
     {
       mTgtFreq[p] = mTgtAmp[p] = 0.f;
       mFreqCur[p] = mAmpCur[p] = 0.f;
-      mPeakPhase[p] = 0.f;
+      mPeakPhase[p] = mPeakPhaseR[p] = 0.f;
     }
+    mStereoHzSmooth = mStereoOffsetHz;
 
     RecomputeCoeffs();
     mOctaveRatioSmooth = mOctaveRatioTarget;
@@ -130,46 +131,68 @@ public:
     }
   }
 
-  // Un echantillon : somme des lectures de la table d'onde partagee, une
-  // par partiel, a sa hauteur et son amplitude. Octave et Fine sont
-  // appliques ICI (en direct, meme sur un son gele). La table reste la
-  // SEULE source de timbre ; la capture ne fournit que hauteur+volume.
-  float Synthesize(const WavetableEngine& engine)
+  // Ecart de frequence de la copie DROITE par rapport a la gauche, en Hz
+  // (-10..+10), ajoute a chaque partiel. 0 = gauche et droite identiques
+  // (image mono centree) ; sinon les deux copies "battent" et se dephasent
+  // lentement : effet de phasing, et image stereo.
+  void SetStereoOffsetHz(float hz) { mStereoOffsetHz = std::clamp(hz, -10.f, 10.f); }
+
+  // Un echantillon stereo : le tout est joue en DOUBLE. La copie gauche est
+  // a la hauteur captee, la copie droite a hauteur + ecart (Hz). Octave et
+  // Fine sont appliques ICI (en direct, meme sur un son gele). La table
+  // reste la SEULE source de timbre ; la capture ne fournit que
+  // hauteur+volume.
+  void Synthesize(const WavetableEngine& engine, float& outL, float& outR)
   {
     const float* table = engine.GetTable();
     const int size = engine.GetTableSize();
     const float nyquist = (float)mSampleRate * 0.5f;
+    const float sr = (float)mSampleRate;
 
     mOctaveRatioSmooth += (mOctaveRatioTarget - mOctaveRatioSmooth) * mTransposeCoeff;
     mFineHzSmooth += (mFineTuneHz - mFineHzSmooth) * mTransposeCoeff;
+    mStereoHzSmooth += (mStereoOffsetHz - mStereoHzSmooth) * mTransposeCoeff;
 
-    float sum = 0.f;
+    float sumL = 0.f, sumR = 0.f;
     for (int p = 0; p < kMaxPeaks; p++)
     {
       mAmpCur[p] += (mTgtAmp[p] - mAmpCur[p]) * mAmpCoeff;
       mFreqCur[p] += (mTgtFreq[p] - mFreqCur[p]) * mFreqCoeff;
 
-      if (mAmpCur[p] < 0.00001f && mTgtAmp[p] <= 0.f) { mPeakPhase[p] = 0.f; continue; }
+      if (mAmpCur[p] < 0.00001f && mTgtAmp[p] <= 0.f) { mPeakPhase[p] = 0.f; mPeakPhaseR[p] = 0.f; continue; }
 
-      float freq = mFreqCur[p] * mOctaveRatioSmooth + mFineHzSmooth;
-      if (freq <= 0.f || freq >= nyquist) continue; // evite repliement / depassement de table
+      const float freqL = mFreqCur[p] * mOctaveRatioSmooth + mFineHzSmooth;
+      const float freqR = freqL + mStereoHzSmooth;
 
-      float pos = mPeakPhase[p] * (float)size;
-      int idx0 = (int)pos;
-      if (idx0 >= size) idx0 = size - 1; // garde-fou : jamais de lecture hors table
-      int idx1 = (idx0 + 1) % size;
-      float frac = pos - (float)idx0;
-      float tableSample = table[idx0] * (1.f - frac) + table[idx1] * frac;
-
-      sum += mAmpCur[p] * tableSample;
-
-      mPeakPhase[p] += freq / (float)mSampleRate;
-      if (mPeakPhase[p] >= 1.f) mPeakPhase[p] -= std::floor(mPeakPhase[p]);
+      if (freqL > 0.f && freqL < nyquist) // garde-fou : evite repliement / depassement de table
+      {
+        sumL += mAmpCur[p] * ReadTable(table, size, mPeakPhase[p]);
+        mPeakPhase[p] += freqL / sr;
+        if (mPeakPhase[p] >= 1.f) mPeakPhase[p] -= std::floor(mPeakPhase[p]);
+      }
+      if (freqR > 0.f && freqR < nyquist)
+      {
+        sumR += mAmpCur[p] * ReadTable(table, size, mPeakPhaseR[p]);
+        mPeakPhaseR[p] += freqR / sr;
+        if (mPeakPhaseR[p] >= 1.f) mPeakPhaseR[p] -= std::floor(mPeakPhaseR[p]);
+      }
     }
-    return sum * mVolume;
+    outL = sumL * mVolume;
+    outR = sumR * mVolume;
   }
 
 private:
+  static float ReadTable(const float* table, int size, float phase)
+  {
+    float pos = phase * (float)size;
+    int idx0 = (int)pos;
+    if (idx0 >= size) idx0 = size - 1; // garde-fou : jamais de lecture hors table
+    if (idx0 < 0) idx0 = 0;
+    int idx1 = (idx0 + 1) % size;
+    float frac = pos - (float)idx0;
+    return table[idx0] * (1.f - frac) + table[idx1] * frac;
+  }
+
   struct Peak { float freq; float amp; };
 
   void AnalyzeHop()
@@ -316,6 +339,8 @@ private:
   float mOctaveRatioSmooth = 1.f;
   float mFineTuneHz = 0.f;
   float mFineHzSmooth = 0.f;
+  float mStereoOffsetHz = 0.f;
+  float mStereoHzSmooth = 0.f;
   float mVolume = 1.f;
 
   std::atomic<bool> mCaptureMouse { false };
@@ -330,5 +355,6 @@ private:
   float mTgtAmp[kMaxPeaks] = { 0.f };
   float mFreqCur[kMaxPeaks] = { 0.f };
   float mAmpCur[kMaxPeaks] = { 0.f };
-  float mPeakPhase[kMaxPeaks] = { 0.f };
+  float mPeakPhase[kMaxPeaks] = { 0.f };  // phase gauche
+  float mPeakPhaseR[kMaxPeaks] = { 0.f }; // phase droite
 };

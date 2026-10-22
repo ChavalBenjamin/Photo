@@ -58,6 +58,8 @@ Photo::Photo(const InstanceInfo& info)
     GetParam(kParamHarmonic1 + h)->InitPercentage(name, 0.);
   }
 
+  GetParam(kParamStereoHz)->InitDouble("Ecart D/G", 0., -10., 10., 0.01, "Hz");
+
   for (int v = 0; v < kNumVoices; v++)
   {
     char nameVol[24], nameOct[24], nameFine[24];
@@ -89,12 +91,14 @@ Photo::Photo(const InstanceInfo& info)
 
     // --- Forme de base, Skew, Lissage Freq ---
     IRECT topRow = bounds.GetFromTop(100.f).GetPadded(-10.f);
-    mParamControls[kParamBaseShape] = new IVMenuButtonControl(topRow.GetGridCell(0, 0, 1, 3).GetCentredInside(160.f, 44.f), kParamBaseShape, "Forme de base");
+    mParamControls[kParamBaseShape] = new IVMenuButtonControl(topRow.GetGridCell(0, 0, 1, 4).GetCentredInside(160.f, 44.f), kParamBaseShape, "Forme de base");
     pGraphics->AttachControl(mParamControls[kParamBaseShape]);
-    mParamControls[kParamSkew] = new IVKnobControl(topRow.GetGridCell(0, 1, 1, 3).GetCentredInside(64.f), kParamSkew, "Skew", knobStyle);
+    mParamControls[kParamSkew] = new IVKnobControl(topRow.GetGridCell(0, 1, 1, 4).GetCentredInside(64.f), kParamSkew, "Skew", knobStyle);
     pGraphics->AttachControl(mParamControls[kParamSkew]);
-    mParamControls[kParamFreqSmooth] = new IVKnobControl(topRow.GetGridCell(0, 2, 1, 3).GetCentredInside(64.f), kParamFreqSmooth, "Lissage Freq", knobStyle);
+    mParamControls[kParamFreqSmooth] = new IVKnobControl(topRow.GetGridCell(0, 2, 1, 4).GetCentredInside(64.f), kParamFreqSmooth, "Lissage Freq", knobStyle);
     pGraphics->AttachControl(mParamControls[kParamFreqSmooth]);
+    mParamControls[kParamStereoHz] = new IVKnobControl(topRow.GetGridCell(0, 3, 1, 4).GetCentredInside(64.f), kParamStereoHz, "Ecart D/G", knobStyle);
+    pGraphics->AttachControl(mParamControls[kParamStereoHz]);
 
     // --- 16 harmoniques, en 2 rangees de 8 ---
     IRECT harmRow1 = IRECT(bounds.L, topRow.B, bounds.R, topRow.B + 90.f).GetPadded(-10.f);
@@ -245,12 +249,14 @@ void Photo::ProcessBlock(sample** inputs, sample** outputs, int nFrames)
   for (int i = 0; i < n; i++)
     bufMono[i] = (float)inputs[0][i];
 
+  const float stereoHz = (float)GetParam(kParamStereoHz)->Value();
   for (int v = 0; v < kNumVoices; v++)
   {
     float volume = (float)(GetParam(VoiceParam(v, kVoiceVolume))->Value() / 100.0);
     int octaveIdx = (int)GetParam(VoiceParam(v, kVoiceOctave))->Value(); // 0-8, 4 = neutre
     float fineHz = (float)GetParam(VoiceParam(v, kVoiceFine))->Value();
 
+    mSnapshots[v].SetStereoOffsetHz(stereoHz);
     mSnapshots[v].SetFreqSmoothMs((float)GetParam(kParamFreqSmooth)->Value());
     mSnapshots[v].SetVolume(volume);
     mSnapshots[v].SetOctaveShift(octaveIdx - 4);
@@ -262,12 +268,18 @@ void Photo::ProcessBlock(sample** inputs, sample** outputs, int nFrames)
     std::lock_guard<std::mutex> lock(mEngineMutex);
     for (int i = 0; i < n; i++)
     {
-      float sample = mTestOsc.Process(mEngine);
+      const float test = mTestOsc.Process(mEngine);
+      float sumL = test, sumR = test;
       for (int v = 0; v < kNumVoices; v++)
-        sample += mSnapshots[v].Synthesize(mEngine);
+      {
+        float l, r;
+        mSnapshots[v].Synthesize(mEngine, l, r);
+        sumL += l;
+        sumR += r;
+      }
 
-      outputs[0][i] = sample;
-      outputs[1][i] = sample;
+      outputs[0][i] = sumL;
+      outputs[1][i] = sumR;
     }
   }
 }

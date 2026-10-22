@@ -44,7 +44,10 @@ enum EParams
   kParamHarmonic15,
   kParamHarmonic16,
   kParamVoiceParamsStart, // 12 voix x 3 params (Volume, Octave, Fine)
-  kNumParams = kParamVoiceParamsStart + kNumVoices * 3
+  // Ajoute APRES les parametres de voix pour ne pas decaler les indices
+  // des projets deja enregistres.
+  kParamStereoHz = kParamVoiceParamsStart + kNumVoices * 3, // ecart D/G en Hz (-10..+10)
+  kNumParams
 };
 
 // Helper : indice du parametre pour la voix "voiceIdx" (0-11), which =
