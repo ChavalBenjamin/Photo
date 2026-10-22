@@ -49,7 +49,7 @@ Photo::Photo(const InstanceInfo& info)
 {
   GetParam(kParamBaseShape)->InitEnum("Forme", 0, 4, "", IParam::kFlagsNone, "", "Sinus", "Saw", "Triangle", "Carre");
   GetParam(kParamSkew)->InitPercentage("Skew", 50.);
-  GetParam(kParamFreqSmooth)->InitDouble("Lissage Freq", 15., 0., 50., 0.1, "ms");
+  GetParam(kParamFreqSmooth)->InitDouble("Lissage Freq", 0., 0., 50., 0.1, "ms");
 
   for (int h = 0; h < WavetableEngine::kNumHarmonics; h++)
   {

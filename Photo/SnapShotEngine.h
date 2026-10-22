@@ -11,18 +11,27 @@
 // SnapshotEngine
 //
 // Le mecanisme "photo" : analyse FFT en direct de l'entree audio (micro
-// ou Wave), extrait jusqu'a 10 pics frequence+amplitude dominants,
-// resynthetise additivement via 10 oscillateurs sinusoidaux simples.
+// ou Wave), extrait les kMaxPeaks (10) pics dominants frequence+amplitude,
+// resynthetise via des lectures de la table d'onde partagee.
 //
-// Tant que StartCapture() est actif, les 10 pics se mettent a jour en
-// direct a chaque hop. Des que StopCapture() est appele, la mise a jour
-// s'arrete : les 10 dernieres valeurs captees restent figees et
-// continuent d'etre jouees (le "gel" de la photo).
+// Analyse inspiree de fiddle~ (Pd) : fenetre de Hann, pics locaux dont la
+// frequence ET l'amplitude sont interpolees a partir des cases voisines
+// (formule exacte pour une fenetre de Hann, Grandke 1983) - la precision
+// ne depend plus de la largeur d'une case de FFT (~21 Hz a 2048 points).
+// Seuil de detection ABSOLU (dBFS), pas relatif au pic le plus fort.
 //
-// Suivi de partiels SIMPLIFIE : les pics sont tries par frequence (pas
-// par force), pas de vrai suivi d'identite d'un hop a l'autre - une
-// premiere version fonctionnelle, un vrai suivi de partiels serait un
-// chantier a part si besoin plus tard.
+// Suivi de partiels : chaque nouveau pic reprend le partiel (slot) le plus
+// proche en frequence de l'analyse precedente - evite les echanges de
+// place entre partiels (sauts d'amplitude / de hauteur).
+//
+// Tant que la capture est active (souris OU MIDI), les pics se mettent a
+// jour en direct a chaque hop. Au relachement, les dernieres valeurs
+// restent figees et continuent d'etre jouees (le "gel" de la photo).
+//
+// Lissage PAR ECHANTILLON dans Synthesize() : l'amplitude glisse
+// continument vers sa cible (plus d'escalier au rythme des hops), y
+// compris au demarrage et au relachement de la capture. La frequence est
+// lissee de la meme facon, mais a 0 ms par defaut (saut direct).
 // ============================================================================
 
 class SnapshotEngine
@@ -30,48 +39,67 @@ class SnapshotEngine
 public:
   using cplx = std::complex<float>;
   static constexpr int kMaxPeaks = 10;
+  static constexpr float kAmpFloor = 0.0003f; // ~ -70 dBFS : seuil absolu de detection
 
   void Init(int fftSize, double sampleRate)
   {
     mFFTSize = fftSize;
-    mHopSize = mFFTSize / 4; // overlap 75%, fixe pour cette premiere version
-    mSampleRate = sampleRate;
+    mHopSize = mFFTSize / 4; // overlap 75%
+    mSampleRate = (sampleRate > 1.0) ? sampleRate : 44100.0;
 
     mRing.assign(mFFTSize, 0.f);
     mWindow.resize(mFFTSize);
     mCplx.assign(mFFTSize, cplx(0.f, 0.f));
+    mMag.assign(mFFTSize / 2 + 1, 0.f);
+    mCandidates.clear();
+    mCandidates.reserve(mFFTSize / 2);
 
+    // Hann PERIODIQUE (denominateur N) : c'est la forme pour laquelle la
+    // formule d'interpolation des pics est exacte.
     for (int i = 0; i < mFFTSize; i++)
-      mWindow[i] = 0.5f - 0.5f * std::cos(2.f * kPi * i / (mFFTSize - 1));
+      mWindow[i] = 0.5f - 0.5f * std::cos(2.f * kPi * (float)i / (float)mFFTSize);
 
     mWritePos = 0;
     mSamplesUntilHop = mHopSize;
 
-    // Lissage des pics (evite le "zipper" d'un hop a l'autre). Amplitude
-    // : fixe. Frequence : reglable via SetFreqSmoothMs().
-    mHopDurationMs = (float)mHopSize / (float)mSampleRate * 1000.f;
-    mAmpSmoothCoeff = 1.f - std::exp(-mHopDurationMs / kAmpSmoothMs);
-    RecomputeFreqSmoothCoeff();
+    for (int p = 0; p < kMaxPeaks; p++)
+    {
+      mTgtFreq[p] = mTgtAmp[p] = 0.f;
+      mFreqCur[p] = mAmpCur[p] = 0.f;
+      mPeakPhase[p] = 0.f;
+    }
 
-    // Lissage par echantillon d'Octave/Fine (~5 ms) : evite les
-    // craquements quand on bouge le reglage, y compris sur un son gele.
-    mTransposeSmoothCoeff = 1.f - std::exp(-1.f / (0.005f * (float)mSampleRate));
-    mOctaveRatioSmooth = std::pow(2.f, (float)mOctaveShift);
+    RecomputeCoeffs();
+    mOctaveRatioSmooth = mOctaveRatioTarget;
     mFineHzSmooth = mFineTuneHz;
   }
 
-  // 0 = brut, saute instantanement (effet "escalier" audible, en
-  // escalier de hauteur) - plus haut = glissement plus doux.
+  // Lissage de la frequence, par echantillon. 0 = saut direct (defaut).
   void SetFreqSmoothMs(float ms)
   {
-    mFreqSmoothMs = std::clamp(ms, 0.f, 50.f);
-    RecomputeFreqSmoothCoeff();
+    ms = std::clamp(ms, 0.f, 50.f);
+    if (ms == mFreqSmoothMs) return;
+    mFreqSmoothMs = ms;
+    RecomputeCoeffs();
   }
 
-  // Transposition par octave : -4 (÷16) a +4 (×16), 0 = neutre.
-  void SetOctaveShift(int shift) { mOctaveShift = std::clamp(shift, -4, 4); }
+  // Lissage de l'amplitude, par echantillon (anti-"grain" / escalier).
+  void SetAmpSmoothMs(float ms)
+  {
+    ms = std::clamp(ms, 0.1f, 200.f);
+    if (ms == mAmpSmoothMs) return;
+    mAmpSmoothMs = ms;
+    RecomputeCoeffs();
+  }
 
-  // Ajustement fin, en Hz, ajoute APRES la transposition par octave.
+  // Transposition par octave : -4 (/16) a +4 (x16), 0 = neutre.
+  void SetOctaveShift(int shift)
+  {
+    mOctaveShift = std::clamp(shift, -4, 4);
+    mOctaveRatioTarget = std::pow(2.f, (float)mOctaveShift);
+  }
+
+  // Ajustement fin, en Hz, ajoute a CHAQUE partiel APRES l'octave.
   void SetFineTuneHz(float hz) { mFineTuneHz = std::clamp(hz, -20.f, 20.f); }
 
   // Volume de cette voix (0-2, permet un peu de boost au-dela de l'unite).
@@ -84,8 +112,8 @@ public:
   void SetMidiCapture(bool on) { mCaptureMidi.store(on); }
 
   // Alimente l'analyse avec le son d'entree - a appeler en continu
-  // depuis ProcessBlock, meme quand StopCapture (pour que le prochain
-  // Start reparte avec un historique frais).
+  // depuis ProcessBlock, meme quand pas de capture (pour que le prochain
+  // appui reparte avec un historique frais).
   void Feed(const float* in, int nFrames)
   {
     bool capturing = mCaptureMouse.load() || mCaptureMidi.load();
@@ -102,50 +130,48 @@ public:
     }
   }
 
-  // Resynthese additive : un echantillon a la fois, somme des 10
-  // oscillateurs (frequence/amplitude figees ou en direct selon l'etat).
-  // Lit la MEME table d'onde (forme + harmoniques + Skew) que le reste
-  // du moteur, une fois par voix captee - a sa propre hauteur, a sa
-  // propre amplitude. La table reste la SEULE source de timbre ; la
-  // capture FFT ne fournit que hauteur+volume pour chacune des 10 voix
-  // (comme un fiddle~ pilotant 10 lectures de la meme table dans Pure
-  // Data).
+  // Un echantillon : somme des lectures de la table d'onde partagee, une
+  // par partiel, a sa hauteur et son amplitude. Octave et Fine sont
+  // appliques ICI (en direct, meme sur un son gele). La table reste la
+  // SEULE source de timbre ; la capture ne fournit que hauteur+volume.
   float Synthesize(const WavetableEngine& engine)
   {
     const float* table = engine.GetTable();
-    int size = engine.GetTableSize();
-
-    // Octave et Fine sont appliques ICI, a chaque echantillon, sur les
-    // frequences brutes captees : ils agissent donc en direct, meme sur
-    // un son gele. Fine s'ajoute en Hz a chaque partiel (battements).
-    mOctaveRatioSmooth += (std::pow(2.f, (float)mOctaveShift) - mOctaveRatioSmooth) * mTransposeSmoothCoeff;
-    mFineHzSmooth += (mFineTuneHz - mFineHzSmooth) * mTransposeSmoothCoeff;
+    const int size = engine.GetTableSize();
     const float nyquist = (float)mSampleRate * 0.5f;
+
+    mOctaveRatioSmooth += (mOctaveRatioTarget - mOctaveRatioSmooth) * mTransposeCoeff;
+    mFineHzSmooth += (mFineTuneHz - mFineHzSmooth) * mTransposeCoeff;
 
     float sum = 0.f;
     for (int p = 0; p < kMaxPeaks; p++)
     {
-      if (mPeakAmpSmooth[p] < 0.0001f) { mPeakPhase[p] = 0.f; continue; }
+      mAmpCur[p] += (mTgtAmp[p] - mAmpCur[p]) * mAmpCoeff;
+      mFreqCur[p] += (mTgtFreq[p] - mFreqCur[p]) * mFreqCoeff;
 
-      float freq = mPeakFreqSmooth[p] * mOctaveRatioSmooth + mFineHzSmooth;
-      if (freq < 0.f) freq = 0.f;
-      if (freq >= nyquist) continue; // evite le repliement (x16 par ex.)
+      if (mAmpCur[p] < 0.00001f && mTgtAmp[p] <= 0.f) { mPeakPhase[p] = 0.f; continue; }
+
+      float freq = mFreqCur[p] * mOctaveRatioSmooth + mFineHzSmooth;
+      if (freq <= 0.f || freq >= nyquist) continue; // evite repliement / depassement de table
 
       float pos = mPeakPhase[p] * (float)size;
       int idx0 = (int)pos;
+      if (idx0 >= size) idx0 = size - 1; // garde-fou : jamais de lecture hors table
       int idx1 = (idx0 + 1) % size;
       float frac = pos - (float)idx0;
       float tableSample = table[idx0] * (1.f - frac) + table[idx1] * frac;
 
-      sum += mPeakAmpSmooth[p] * tableSample;
+      sum += mAmpCur[p] * tableSample;
 
-      mPeakPhase[p] += freq / (float)mSampleRate; // phase 0..1
-      if (mPeakPhase[p] >= 1.f) mPeakPhase[p] -= 1.f;
+      mPeakPhase[p] += freq / (float)mSampleRate;
+      if (mPeakPhase[p] >= 1.f) mPeakPhase[p] -= std::floor(mPeakPhase[p]);
     }
     return sum * mVolume;
   }
 
 private:
+  struct Peak { float freq; float amp; };
+
   void AnalyzeHop()
   {
     for (int i = 0; i < mFFTSize; i++)
@@ -156,59 +182,90 @@ private:
 
     FFT(mCplx, false);
 
-    int numBins = mFFTSize / 2;
-    std::vector<float> mag(numBins + 1);
-    float maxMag = 0.f;
+    const int numBins = mFFTSize / 2;
     for (int k = 0; k <= numBins; k++)
+      mMag[k] = std::abs(mCplx[k]);
+
+    // Amplitude d'un sinus pur A sur une case, fenetre de Hann : |X| = A*N/4.
+    const float magFloor = kAmpFloor * (float)mFFTSize * 0.25f;
+    const float binHz = (float)mSampleRate / (float)mFFTSize;
+
+    // --- Pics locaux + interpolation (frequence ET amplitude) ---
+    mCandidates.clear();
+    for (int k = 2; k < numBins - 1; k++)
     {
-      mag[k] = std::abs(mCplx[k]);
-      maxMag = std::max(maxMag, mag[k]);
+      const float m = mMag[k];
+      if (m < magFloor) continue;
+      if (!(m > mMag[k - 1] && m >= mMag[k + 1])) continue;
+
+      const bool right = mMag[k + 1] > mMag[k - 1];
+      const float alpha = (right ? mMag[k + 1] : mMag[k - 1]) / m; // 0.5..1
+      float d = (2.f * alpha - 1.f) / (alpha + 1.f);              // 0..0.5
+      const float delta = right ? d : -d;
+
+      // Reponse de la fenetre de Hann a delta case(s) du centre.
+      const float pd = kPi * delta;
+      const float sinc = (std::abs(delta) < 1e-4f) ? 1.f : std::sin(pd) / pd;
+      const float resp = sinc / (1.f - delta * delta);
+
+      Peak pk;
+      pk.freq = ((float)k + delta) * binHz;
+      pk.amp = std::clamp(4.f * m / ((float)mFFTSize * resp), 0.f, 2.f);
+      mCandidates.push_back(pk);
     }
-    if (maxMag < 1e-6f) return; // silence, rien a capturer ce hop
 
-    // Pics locaux (maxima), au-dessus d'un plancher relatif au pic max.
-    float noiseFloor = maxMag * 0.02f;
-    struct Peak { int bin; float mag; };
-    std::vector<Peak> candidates;
-    for (int k = 1; k < numBins; k++)
+    // Les kMaxPeaks plus forts.
+    std::sort(mCandidates.begin(), mCandidates.end(), [](const Peak& a, const Peak& b) { return a.amp > b.amp; });
+    if ((int)mCandidates.size() > kMaxPeaks) mCandidates.resize(kMaxPeaks);
+
+    // --- Suivi de partiels : chaque pic reprend le slot le plus proche ---
+    bool used[kMaxPeaks] = { false };
+    int assigned[kMaxPeaks];
+    const int nCand = (int)mCandidates.size();
+    for (int c = 0; c < nCand; c++)
     {
-      if (mag[k] < noiseFloor) continue;
-      if (mag[k] > mag[k - 1] && mag[k] > mag[k + 1])
-        candidates.push_back({ k, mag[k] });
-    }
-
-    // Garde les kMaxPeaks plus forts, puis re-trie par frequence
-    // (stabilite d'un hop a l'autre pour un contenu harmonique typique).
-    std::sort(candidates.begin(), candidates.end(), [](const Peak& a, const Peak& b) { return a.mag > b.mag; });
-    if ((int)candidates.size() > kMaxPeaks) candidates.resize(kMaxPeaks);
-    std::sort(candidates.begin(), candidates.end(), [](const Peak& a, const Peak& b) { return a.bin < b.bin; });
-
-    for (int p = 0; p < kMaxPeaks; p++)
-    {
-      float targetFreq = 0.f, targetAmp = 0.f;
-      if (p < (int)candidates.size())
+      assigned[c] = -1;
+      int best = -1;
+      float bestDist = 1e30f;
+      for (int s = 0; s < kMaxPeaks; s++)
       {
-        targetFreq = (float)candidates[p].bin * (float)mSampleRate / (float)mFFTSize;
-        // Frequence BRUTE : la transposition (Octave, Fine) est
-        // appliquee plus tard, dans Synthesize().
-
-        // Amplitude ABSOLUE (pas relative au pic dominant de CE hop) -
-        // reconstruit le vrai niveau du signal d'origine, en compensant
-        // le gain de la fenetre Hann (gain coherent ~0.5) et la taille
-        // FFT. Un murmure reste faible, un son fort reste fort.
-        constexpr float kWindowCoherentGain = 0.5f;
-        targetAmp = (2.f * candidates[p].mag) / ((float)mFFTSize * kWindowCoherentGain);
-        targetAmp = std::clamp(targetAmp, 0.f, 2.f); // securite, evite un pic aberrant
+        if (used[s] || mTgtAmp[s] <= 0.f) continue; // slot libre : pas un candidat au suivi
+        const float dist = std::abs(mCandidates[c].freq - mTgtFreq[s]);
+        const float tol = std::max(2.f * binHz, 0.03f * mTgtFreq[s]);
+        if (dist < tol && dist < bestDist) { bestDist = dist; best = s; }
       }
-      mPeakFreqSmooth[p] += (targetFreq - mPeakFreqSmooth[p]) * mFreqSmoothCoeff;
-      mPeakAmpSmooth[p] += (targetAmp - mPeakAmpSmooth[p]) * mAmpSmoothCoeff;
+      if (best >= 0) { used[best] = true; assigned[c] = best; }
     }
+    // Pics sans partiel precedent : on prend un slot libre (le moins audible d'abord).
+    for (int c = 0; c < nCand; c++)
+    {
+      if (assigned[c] >= 0) continue;
+      int best = -1;
+      float bestAmp = 1e30f;
+      for (int s = 0; s < kMaxPeaks; s++)
+        if (!used[s] && mAmpCur[s] < bestAmp) { bestAmp = mAmpCur[s]; best = s; }
+      if (best < 0) continue; // ne devrait pas arriver (<= 10 candidats pour 10 slots)
+      used[best] = true;
+      assigned[c] = best;
+      if (mAmpCur[best] < 0.001f) mFreqCur[best] = mCandidates[c].freq; // nouveau partiel : pas de glissement depuis 0
+    }
+    for (int c = 0; c < nCand; c++)
+      if (assigned[c] >= 0)
+      {
+        mTgtFreq[assigned[c]] = mCandidates[c].freq;
+        mTgtAmp[assigned[c]] = mCandidates[c].amp;
+      }
+    // Slots sans pic ce hop : fondu vers 0 (la frequence reste, pour une sortie douce).
+    for (int s = 0; s < kMaxPeaks; s++)
+      if (!used[s]) mTgtAmp[s] = 0.f;
   }
 
-  void RecomputeFreqSmoothCoeff()
+  void RecomputeCoeffs()
   {
-    // ms<=0 : saut instantane, pas de division par zero.
-    mFreqSmoothCoeff = (mFreqSmoothMs <= 0.001f) ? 1.f : (1.f - std::exp(-mHopDurationMs / mFreqSmoothMs));
+    const float sr = (float)mSampleRate;
+    mAmpCoeff = 1.f - std::exp(-1.f / (mAmpSmoothMs * 0.001f * sr));
+    mFreqCoeff = (mFreqSmoothMs <= 0.001f) ? 1.f : (1.f - std::exp(-1.f / (mFreqSmoothMs * 0.001f * sr)));
+    mTransposeCoeff = 1.f - std::exp(-1.f / (0.005f * sr)); // Octave/Fine : ~5 ms
   }
 
   static void FFT(std::vector<cplx>& a, bool invert)
@@ -241,31 +298,37 @@ private:
   }
 
   static constexpr float kPi = 3.14159265358979323846f;
-  static constexpr float kAmpSmoothMs = 15.f; // amplitude : fixe
 
   int mFFTSize = 2048;
   int mHopSize = 512;
   int mSamplesUntilHop = 512;
   int mWritePos = 0;
   double mSampleRate = 44100.0;
-  float mAmpSmoothCoeff = 0.5f;
-  float mFreqSmoothCoeff = 0.5f;
-  float mFreqSmoothMs = 15.f; // reglable, defaut = ancien comportement
-  float mHopDurationMs = 10.f;
+
+  float mAmpSmoothMs = 10.f;
+  float mFreqSmoothMs = 0.f;
+  float mAmpCoeff = 0.01f;
+  float mFreqCoeff = 1.f;
+  float mTransposeCoeff = 0.01f;
+
   int mOctaveShift = 0;
-  float mFineTuneHz = 0.f;
-  float mVolume = 1.f;
-  float mTransposeSmoothCoeff = 0.01f;
+  float mOctaveRatioTarget = 1.f;
   float mOctaveRatioSmooth = 1.f;
+  float mFineTuneHz = 0.f;
   float mFineHzSmooth = 0.f;
+  float mVolume = 1.f;
 
   std::atomic<bool> mCaptureMouse { false };
   std::atomic<bool> mCaptureMidi { false };
 
-  std::vector<float> mRing, mWindow;
+  std::vector<float> mRing, mWindow, mMag;
   std::vector<cplx> mCplx;
+  std::vector<Peak> mCandidates;
 
-  float mPeakFreqSmooth[kMaxPeaks] = { 0.f };
-  float mPeakAmpSmooth[kMaxPeaks] = { 0.f };
+  // Cibles (mises a jour par hop) et valeurs courantes (lissees par echantillon).
+  float mTgtFreq[kMaxPeaks] = { 0.f };
+  float mTgtAmp[kMaxPeaks] = { 0.f };
+  float mFreqCur[kMaxPeaks] = { 0.f };
+  float mAmpCur[kMaxPeaks] = { 0.f };
   float mPeakPhase[kMaxPeaks] = { 0.f };
 };
