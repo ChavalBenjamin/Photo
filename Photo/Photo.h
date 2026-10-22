@@ -47,6 +47,15 @@ enum EParams
   // Ajoute APRES les parametres de voix pour ne pas decaler les indices
   // des projets deja enregistres.
   kParamStereoHz = kParamVoiceParamsStart + kNumVoices * 3, // ecart D/G en Hz (-10..+10)
+  kParamMode,      // 0 = Boutons (12 boutons / CC), 1 = Clavier (MIDI)
+  kParamAttack,    // ADSR, mode Clavier (ms)
+  kParamDecay,     // ms
+  kParamSustain,   // %
+  kParamRelease,   // ms
+  kParamVelSens,   // sensibilite a la velocite (0-100%)
+  kParamKbVolume,  // reglages GLOBAUX du mode Clavier
+  kParamKbOctave,
+  kParamKbFine,
   kNumParams
 };
 
@@ -95,7 +104,17 @@ private:
   // moteur de table d'onde seul.
   WavetableOscillator mTestOsc;
 
+  // UNE analyse FFT partagee par les 12 voix (au lieu d'une par voix).
+  PeakAnalyzer mAnalyzer;
   SnapshotEngine mSnapshots[kNumVoices];
+
+  // Mode Clavier : attribution des voix (la plus ancienne est volee).
+  int AllocVoice();
+  uint32_t mVoiceCounter = 0;
+  bool mKbMode = false;
+
+  // Tampon d'entree mono, propre a l'instance (pas partage entre instances).
+  float mInBuf[8192];
 
   std::mutex mWaveUIMutex;
   std::atomic<bool> mWaveUIUpdated { false };

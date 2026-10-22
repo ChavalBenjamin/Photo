@@ -60,6 +60,17 @@ Photo::Photo(const InstanceInfo& info)
 
   GetParam(kParamStereoHz)->InitDouble("Ecart D/G", 0., -10., 10., 0.01, "Hz");
 
+  GetParam(kParamMode)->InitEnum("Mode", 0, 2, "", IParam::kFlagsNone, "", "Boutons", "Clavier");
+  GetParam(kParamAttack)->InitDouble("Attaque", 5., 0., 2000., 0.1, "ms");
+  GetParam(kParamDecay)->InitDouble("Decay", 200., 1., 5000., 0.1, "ms");
+  GetParam(kParamSustain)->InitPercentage("Sustain", 80.);
+  GetParam(kParamRelease)->InitDouble("Release", 300., 1., 8000., 0.1, "ms");
+  GetParam(kParamVelSens)->InitPercentage("Velocite", 100.);
+  GetParam(kParamKbVolume)->InitPercentage("Clavier Volume", 100.);
+  GetParam(kParamKbOctave)->InitEnum("Clavier Octave", 4, 9, "", IParam::kFlagsNone, "",
+                                      "/16", "/8", "/4", "/2", "1", "x2", "x4", "x8", "x16");
+  GetParam(kParamKbFine)->InitDouble("Clavier Fine", 0., -20., 20., 0.1, "Hz");
+
   for (int v = 0; v < kNumVoices; v++)
   {
     char nameVol[24], nameOct[24], nameFine[24];
@@ -135,8 +146,24 @@ Photo::Photo(const InstanceInfo& info)
       pGraphics->AttachControl(mParamControls[VoiceParam(v, kVoiceFine)]);
     }
 
+    // --- Mode Clavier : Mode / ADSR / Velocite / Volume / Octave / Fine ---
+    IRECT kbRow = IRECT(bounds.L, voicesRow.B, bounds.R, voicesRow.B + 100.f).GetPadded(-10.f);
+    mParamControls[kParamMode] = new IVMenuButtonControl(kbRow.GetGridCell(0, 0, 1, 9).GetCentredInside(90.f, 34.f), kParamMode, "Mode");
+    pGraphics->AttachControl(mParamControls[kParamMode]);
+    const int kbKnobs[] = { kParamAttack, kParamDecay, kParamSustain, kParamRelease, kParamVelSens, kParamKbVolume };
+    const char* kbNames[] = { "Attaque", "Decay", "Sustain", "Release", "Velocite", "Volume" };
+    for (int i = 0; i < 6; i++)
+    {
+      mParamControls[kbKnobs[i]] = new IVKnobControl(kbRow.GetGridCell(0, 1 + i, 1, 9).GetCentredInside(60.f), kbKnobs[i], kbNames[i], knobStyle);
+      pGraphics->AttachControl(mParamControls[kbKnobs[i]]);
+    }
+    mParamControls[kParamKbOctave] = new IVMenuButtonControl(kbRow.GetGridCell(0, 7, 1, 9).GetCentredInside(70.f, 34.f), kParamKbOctave, "Octave");
+    pGraphics->AttachControl(mParamControls[kParamKbOctave]);
+    mParamControls[kParamKbFine] = new IVKnobControl(kbRow.GetGridCell(0, 8, 1, 9).GetCentredInside(60.f), kParamKbFine, "Fine", knobStyle);
+    pGraphics->AttachControl(mParamControls[kParamKbFine]);
+
     // --- Visualisation de la table d'onde (dessin a cabler plus tard) ---
-    IRECT waveArea = IRECT(bounds.L, voicesRow.B, bounds.R, bounds.B).GetPadded(-20.f);
+    IRECT waveArea = IRECT(bounds.L, kbRow.B, bounds.R, bounds.B).GetPadded(-20.f);
     mWaveView = new SpectralCurvePreviewControl(waveArea);
     pGraphics->AttachControl(mWaveView);
   };
@@ -170,8 +197,9 @@ void Photo::ApplyAllState()
 #if IPLUG_DSP
   UpdateEngine();
   mTestOsc.SetSampleRate(GetSampleRate());
+  mAnalyzer.Init(2048, GetSampleRate());
   for (int v = 0; v < kNumVoices; v++)
-    mSnapshots[v].Init(2048, GetSampleRate());
+    mSnapshots[v].Init(GetSampleRate());
 #endif
 }
 
@@ -210,24 +238,59 @@ void Photo::OnReset()
 
 void Photo::OnParamChange(int paramIdx)
 {
-  UpdateEngine();
+  // Seuls ces parametres reconstruisent la table d'onde.
+  if (paramIdx == kParamBaseShape || paramIdx == kParamSkew
+      || (paramIdx >= kParamHarmonic1 && paramIdx <= kParamHarmonic16))
+    UpdateEngine();
+}
+
+int Photo::AllocVoice()
+{
+  for (int v = 0; v < kNumVoices; v++)
+    if (mSnapshots[v].IsFree()) return v;
+  // Toutes occupees : on vole la plus ancienne.
+  int oldest = 0;
+  for (int v = 1; v < kNumVoices; v++)
+    if (mSnapshots[v].Age() < mSnapshots[oldest].Age()) oldest = v;
+  return oldest;
 }
 
 void Photo::ProcessMidiMsg(const IMidiMsg& msg)
 {
+  const bool kbMode = (int)GetParam(kParamMode)->Value() == 1;
+
   switch (msg.StatusMsg())
   {
     case IMidiMsg::kNoteOn:
       if (msg.Velocity() > 0)
       {
-        float freq = 440.f * std::pow(2.f, ((float)msg.NoteNumber() - 69.f) / 12.f);
-        mTestOsc.NoteOn(freq);
+        if (kbMode)
+        {
+          // Une photo par note, figee, hauteur d'origine.
+          const float sens = (float)(GetParam(kParamVelSens)->Value() / 100.0);
+          const float v01 = (float)msg.Velocity() / 127.f;
+          const float velGain = 1.f - sens * (1.f - v01); // sens 100% : gain = velocite
+          int v = AllocVoice();
+          mSnapshots[v].NoteOn(mAnalyzer, msg.NoteNumber(), velGain, ++mVoiceCounter);
+        }
+        else
+        {
+          float freq = 440.f * std::pow(2.f, ((float)msg.NoteNumber() - 69.f) / 12.f);
+          mTestOsc.NoteOn(freq);
+        }
+        break;
+      }
+      // velocite 0 : equivalent a un note-off
+      // fallthrough
+    case IMidiMsg::kNoteOff:
+      if (kbMode)
+      {
+        for (int v = 0; v < kNumVoices; v++)
+          if (mSnapshots[v].IsHeld() && mSnapshots[v].Note() == msg.NoteNumber())
+            mSnapshots[v].NoteOff();
       }
       else
         mTestOsc.NoteOff();
-      break;
-    case IMidiMsg::kNoteOff:
-      mTestOsc.NoteOff();
       break;
     case IMidiMsg::kControlChange:
     {
@@ -244,24 +307,48 @@ void Photo::ProcessMidiMsg(const IMidiMsg& msg)
 
 void Photo::ProcessBlock(sample** inputs, sample** outputs, int nFrames)
 {
-  static float bufMono[8192];
-  int n = std::min(nFrames, 8192);
+  const int n = std::min(nFrames, 8192);
   for (int i = 0; i < n; i++)
-    bufMono[i] = (float)inputs[0][i];
+    mInBuf[i] = (float)inputs[0][i];
+
+  // Changement de mode : on coupe tout (sinon le son fige du mode Boutons
+  // resterait audible au clavier, et inversement).
+  const bool kbMode = (int)GetParam(kParamMode)->Value() == 1;
+  if (kbMode != mKbMode)
+  {
+    mKbMode = kbMode;
+    for (int v = 0; v < kNumVoices; v++) mSnapshots[v].Silence();
+    mTestOsc.NoteOff();
+  }
+
+  // Analyse FFT UNIQUE, partagee par toutes les voix.
+  mAnalyzer.Feed(mInBuf, n);
 
   const float stereoHz = (float)GetParam(kParamStereoHz)->Value();
+  const float freqSmooth = (float)GetParam(kParamFreqSmooth)->Value();
+  const float atk = (float)GetParam(kParamAttack)->Value();
+  const float dec = (float)GetParam(kParamDecay)->Value();
+  const float sus = (float)(GetParam(kParamSustain)->Value() / 100.0);
+  const float rel = (float)GetParam(kParamRelease)->Value();
+  const float kbVol = (float)(GetParam(kParamKbVolume)->Value() / 100.0);
+  const int kbOct = (int)GetParam(kParamKbOctave)->Value();
+  const float kbFine = (float)GetParam(kParamKbFine)->Value();
+
   for (int v = 0; v < kNumVoices; v++)
   {
-    float volume = (float)(GetParam(VoiceParam(v, kVoiceVolume))->Value() / 100.0);
-    int octaveIdx = (int)GetParam(VoiceParam(v, kVoiceOctave))->Value(); // 0-8, 4 = neutre
-    float fineHz = (float)GetParam(VoiceParam(v, kVoiceFine))->Value();
+    // Mode Boutons : reglages propres a chaque voix. Mode Clavier : globaux.
+    float volume = kbMode ? kbVol : (float)(GetParam(VoiceParam(v, kVoiceVolume))->Value() / 100.0);
+    int octaveIdx = kbMode ? kbOct : (int)GetParam(VoiceParam(v, kVoiceOctave))->Value(); // 0-8, 4 = neutre
+    float fineHz = kbMode ? kbFine : (float)GetParam(VoiceParam(v, kVoiceFine))->Value();
 
     mSnapshots[v].SetStereoOffsetHz(stereoHz);
-    mSnapshots[v].SetFreqSmoothMs((float)GetParam(kParamFreqSmooth)->Value());
+    mSnapshots[v].SetFreqSmoothMs(freqSmooth);
     mSnapshots[v].SetVolume(volume);
     mSnapshots[v].SetOctaveShift(octaveIdx - 4);
     mSnapshots[v].SetFineTuneHz(fineHz);
-    mSnapshots[v].Feed(bufMono, n);
+    mSnapshots[v].SetEnvEnabled(kbMode);
+    mSnapshots[v].SetAdsr(atk, dec, sus, rel);
+    if (!kbMode) mSnapshots[v].Update(mAnalyzer);
   }
 
   {
@@ -282,6 +369,8 @@ void Photo::ProcessBlock(sample** inputs, sample** outputs, int nFrames)
       outputs[1][i] = sumR;
     }
   }
+
+  for (int i = n; i < nFrames; i++) { outputs[0][i] = 0.f; outputs[1][i] = 0.f; }
 }
 
 #endif
