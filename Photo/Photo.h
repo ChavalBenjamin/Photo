@@ -22,6 +22,9 @@ static constexpr int kNumVoices = 12;
 // Tous canaux MIDI confondus.
 static constexpr int kCaptureCCBase = 20;
 
+// Niveau d'une note du mode Synthe (laisse de la marge pour les accords).
+static constexpr float kToneAmp = 0.5f;
+
 enum EParams
 {
   kParamBaseShape = 0, // 0=Sine, 1=Saw, 2=Triangle, 3=Square
@@ -47,7 +50,7 @@ enum EParams
   // Ajoute APRES les parametres de voix pour ne pas decaler les indices
   // des projets deja enregistres.
   kParamStereoHz = kParamVoiceParamsStart + kNumVoices * 3, // ecart D/G en Hz (-10..+10)
-  kParamMode,      // 0 = Boutons (12 boutons / CC), 1 = Clavier (MIDI)
+  kParamMode,      // 0 = Boutons (12 boutons / CC), 1 = Clavier (photo par note), 2 = Synthe (table d'onde)
   kParamAttack,    // ADSR, mode Clavier (ms)
   kParamDecay,     // ms
   kParamSustain,   // %
@@ -99,11 +102,6 @@ private:
   std::mutex mEngineMutex;
   WavetableEngine mEngine;
 
-  // Test monophonique simple (clavier MIDI) - le vrai systeme est les
-  // 12 voix Photo ci-dessous, ceci reste utile pour auditionner le
-  // moteur de table d'onde seul.
-  WavetableOscillator mTestOsc;
-
   // UNE analyse FFT partagee par les 12 voix (au lieu d'une par voix).
   PeakAnalyzer mAnalyzer;
   SnapshotEngine mSnapshots[kNumVoices];
@@ -111,7 +109,7 @@ private:
   // Mode Clavier : attribution des voix (la plus ancienne est volee).
   int AllocVoice();
   uint32_t mVoiceCounter = 0;
-  bool mKbMode = false;
+  int mLastMode = 0;
 
   // Tampon d'entree mono, propre a l'instance (pas partage entre instances).
   float mInBuf[8192];

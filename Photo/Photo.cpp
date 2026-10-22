@@ -60,7 +60,7 @@ Photo::Photo(const InstanceInfo& info)
 
   GetParam(kParamStereoHz)->InitDouble("Ecart D/G", 0., -10., 10., 0.01, "Hz");
 
-  GetParam(kParamMode)->InitEnum("Mode", 0, 2, "", IParam::kFlagsNone, "", "Boutons", "Clavier");
+  GetParam(kParamMode)->InitEnum("Mode", 0, 3, "", IParam::kFlagsNone, "", "Boutons", "Clavier", "Synthe");
   GetParam(kParamAttack)->InitDouble("Attaque", 5., 0., 2000., 0.1, "ms");
   GetParam(kParamDecay)->InitDouble("Decay", 200., 1., 5000., 0.1, "ms");
   GetParam(kParamSustain)->InitPercentage("Sustain", 80.);
@@ -196,7 +196,6 @@ void Photo::ApplyAllState()
 {
 #if IPLUG_DSP
   UpdateEngine();
-  mTestOsc.SetSampleRate(GetSampleRate());
   mAnalyzer.Init(2048, GetSampleRate());
   for (int v = 0; v < kNumVoices; v++)
     mSnapshots[v].Init(GetSampleRate());
@@ -244,6 +243,13 @@ void Photo::OnParamChange(int paramIdx)
     UpdateEngine();
 }
 
+// Frequence d'une touche MIDI. Pour l'instant : tempérament egal, La 440 Hz.
+// (Sera remplace par le tempérament choisi.)
+static float NoteFrequency(int note)
+{
+  return 440.f * std::pow(2.f, ((float)note - 69.f) / 12.f);
+}
+
 int Photo::AllocVoice()
 {
   for (int v = 0; v < kNumVoices; v++)
@@ -257,40 +263,34 @@ int Photo::AllocVoice()
 
 void Photo::ProcessMidiMsg(const IMidiMsg& msg)
 {
-  const bool kbMode = (int)GetParam(kParamMode)->Value() == 1;
+  const int mode = (int)GetParam(kParamMode)->Value(); // 0 Boutons, 1 Clavier, 2 Synthe
 
   switch (msg.StatusMsg())
   {
     case IMidiMsg::kNoteOn:
       if (msg.Velocity() > 0)
       {
-        if (kbMode)
-        {
-          // Une photo par note, figee, hauteur d'origine.
-          const float sens = (float)(GetParam(kParamVelSens)->Value() / 100.0);
-          const float v01 = (float)msg.Velocity() / 127.f;
-          const float velGain = 1.f - sens * (1.f - v01); // sens 100% : gain = velocite
-          int v = AllocVoice();
-          mSnapshots[v].NoteOn(mAnalyzer, msg.NoteNumber(), velGain, ++mVoiceCounter);
-        }
+        if (mode == 0) break; // mode Boutons : les notes MIDI sont ignorees
+
+        const float sens = (float)(GetParam(kParamVelSens)->Value() / 100.0);
+        const float v01 = (float)msg.Velocity() / 127.f;
+        const float velGain = 1.f - sens * (1.f - v01); // sens 100% : gain = velocite
+        const int v = AllocVoice();
+        if (mode == 1)
+          mSnapshots[v].NoteOn(mAnalyzer, msg.NoteNumber(), velGain, ++mVoiceCounter); // une photo figee par note
         else
-        {
-          float freq = 440.f * std::pow(2.f, ((float)msg.NoteNumber() - 69.f) / 12.f);
-          mTestOsc.NoteOn(freq);
-        }
+          mSnapshots[v].NoteOnTone(NoteFrequency(msg.NoteNumber()), kToneAmp, msg.NoteNumber(), velGain, ++mVoiceCounter);
         break;
       }
       // velocite 0 : equivalent a un note-off
       // fallthrough
     case IMidiMsg::kNoteOff:
-      if (kbMode)
+      if (mode != 0)
       {
         for (int v = 0; v < kNumVoices; v++)
           if (mSnapshots[v].IsHeld() && mSnapshots[v].Note() == msg.NoteNumber())
             mSnapshots[v].NoteOff();
       }
-      else
-        mTestOsc.NoteOff();
       break;
     case IMidiMsg::kControlChange:
     {
@@ -313,12 +313,12 @@ void Photo::ProcessBlock(sample** inputs, sample** outputs, int nFrames)
 
   // Changement de mode : on coupe tout (sinon le son fige du mode Boutons
   // resterait audible au clavier, et inversement).
-  const bool kbMode = (int)GetParam(kParamMode)->Value() == 1;
-  if (kbMode != mKbMode)
+  const int mode = (int)GetParam(kParamMode)->Value(); // 0 Boutons, 1 Clavier, 2 Synthe
+  const bool kbMode = (mode != 0); // Clavier et Synthe : voix au clavier, ADSR, reglages globaux
+  if (mode != mLastMode)
   {
-    mKbMode = kbMode;
+    mLastMode = mode;
     for (int v = 0; v < kNumVoices; v++) mSnapshots[v].Silence();
-    mTestOsc.NoteOff();
   }
 
   // Analyse FFT UNIQUE, partagee par toutes les voix.
@@ -355,8 +355,7 @@ void Photo::ProcessBlock(sample** inputs, sample** outputs, int nFrames)
     std::lock_guard<std::mutex> lock(mEngineMutex);
     for (int i = 0; i < n; i++)
     {
-      const float test = mTestOsc.Process(mEngine);
-      float sumL = test, sumR = test;
+      float sumL = 0.f, sumR = 0.f;
       for (int v = 0; v < kNumVoices; v++)
       {
         float l, r;

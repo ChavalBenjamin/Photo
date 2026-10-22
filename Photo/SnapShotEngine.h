@@ -371,6 +371,24 @@ public:
     mEnv.GateOn();
   }
 
+  // Mode Synthe : pas de photo, la voix joue simplement la table d'onde
+  // (un seul partiel) a la frequence demandee. Memes ADSR, velocite, Octave,
+  // Fine et ecart D/G que le mode Clavier.
+  void NoteOnTone(float freqHz, float amp, int note, float velGain, uint32_t age)
+  {
+    for (int p = 0; p < kMaxPeaks; p++)
+    {
+      const bool first = (p == 0);
+      mTgtFreq[p] = mFreqCur[p] = first ? freqHz : 0.f;
+      mTgtAmp[p] = mAmpCur[p] = first ? amp : 0.f;
+      mPeakPhase[p] = mPeakPhaseR[p] = 0.f;
+    }
+    mNote = note;
+    mVelGain = std::clamp(velGain, 0.f, 1.f);
+    mAge = age;
+    mEnv.GateOn();
+  }
+
   void NoteOff() { mEnv.GateOff(); }
 
   bool IsFree() const { return mEnv.IsIdle(); }
