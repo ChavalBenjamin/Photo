@@ -16,12 +16,6 @@
 
 static constexpr int kNumVoices = 12;
 
-// Capture pilotable en MIDI : le CC (kCaptureCCBase + n) commande le bouton
-// de la voix n+1. Valeur 127 = capture en cours, toute autre valeur
-// (typiquement 0) = relache/gel. CC 20-31 : numeros libres du standard MIDI.
-// Tous canaux MIDI confondus.
-static constexpr int kCaptureCCBase = 20;
-
 // Niveau d'une note du mode Synthe (laisse de la marge pour les accords).
 static constexpr float kToneAmp = 0.5f;
 
@@ -61,11 +55,15 @@ enum EParams
   kParamKbFine,
   kParamPhotoHold, // mode Relatif : bouton Photo (maintenu = analyse en direct, relache = memoire)
   kParamTrash,     // mode Relatif : vide la memoire
-  kNumParams
+  kParamCaptureStart, // 12 boutons de capture (mode Boutons), un parametre 0/1 chacun
+  kNumParams = kParamCaptureStart + kNumVoices
 };
 
 // Helper : indice du parametre pour la voix "voiceIdx" (0-11), which =
 // 0 (Volume), 1 (Octave), 2 (Fine).
+// Parametre du bouton de capture de la voix "voiceIdx" (0-11). Assignable dans
+// REAPER (CC, note, automation) comme tout parametre.
+inline int CaptureParam(int voiceIdx) { return kParamCaptureStart + voiceIdx; }
 inline int VoiceParam(int voiceIdx, int which) { return kParamVoiceParamsStart + voiceIdx * 3 + which; }
 enum EVoiceParamWhich { kVoiceVolume = 0, kVoiceOctave = 1, kVoiceFine = 2 };
 

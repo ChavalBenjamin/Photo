@@ -336,16 +336,17 @@ public:
 
   // ---- Mode Boutons ----
 
-  // Thread-safe. Deux sources independantes : la souris et le MIDI (CC).
-  void StartCapture() { mCaptureMouse.store(true); }
-  void StopCapture() { mCaptureMouse.store(false); }
-  void SetMidiCapture(bool on) { mCaptureMidi.store(on); }
+  // Thread-safe. Appele quand le parametre "Capture N" change (clic souris,
+  // CC, note ou automation assignes dans REAPER : tout passe par le parametre).
+  void SetCapture(bool on) { mCapture.store(on); }
+  void StartCapture() { SetCapture(true); }
+  void StopCapture() { SetCapture(false); }
 
   // A appeler a chaque bloc, APRES PeakAnalyzer::Feed : tant que la capture
   // est active, prend des micro-photos a la cadence de l'obturateur.
   void Update(const PeakAnalyzer& an, int nFrames)
   {
-    if (!(mCaptureMouse.load() || mCaptureMidi.load())) { mShutterArmed = false; return; }
+    if (!mCapture.load()) { mShutterArmed = false; return; }
     TickShutter(an, nFrames);
   }
 
@@ -616,8 +617,7 @@ private:
   int mNote = -1;
   uint32_t mAge = 0;
 
-  std::atomic<bool> mCaptureMouse { false };
-  std::atomic<bool> mCaptureMidi { false };
+  std::atomic<bool> mCapture { false };
 
   // Cibles (mises a jour par hop) et valeurs courantes (lissees par echantillon).
   float mTgtFreq[kMaxPeaks] = { 0.f };

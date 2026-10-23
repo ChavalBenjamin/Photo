@@ -4,47 +4,6 @@
 #include <cmath>
 
 // ----------------------------------------------------------------------
-// Bouton "photo" minimal : appui = demarre la capture en direct,
-// relachement = fige (gele) sur la derniere valeur captee.
-// ----------------------------------------------------------------------
-class PhotoButtonControl : public IControl
-{
-public:
-  PhotoButtonControl(const IRECT& bounds, SnapshotEngine* engine, int voiceNum)
-  : IControl(bounds), mEngine(engine), mVoiceNum(voiceNum) {}
-
-  void Draw(IGraphics& g) override
-  {
-    IColor fill = mPressed ? IColor(255, 220, 80, 80) : IColor(255, 90, 90, 100);
-    g.FillRoundRect(fill, mRECT, 4.f);
-    g.DrawRoundRect(COLOR_WHITE, mRECT, 4.f);
-    char label[8];
-    snprintf(label, sizeof(label), "%d", mVoiceNum);
-    IText txt(11.f, COLOR_WHITE, "Roboto-Regular", EAlign::Center, EVAlign::Middle);
-    g.DrawText(txt, label, mRECT);
-  }
-
-  void OnMouseDown(float x, float y, const IMouseMod& mod) override
-  {
-    mPressed = true;
-    if (mEngine) mEngine->StartCapture();
-    SetDirty(false);
-  }
-
-  void OnMouseUp(float x, float y, const IMouseMod& mod) override
-  {
-    mPressed = false;
-    if (mEngine) mEngine->StopCapture();
-    SetDirty(false);
-  }
-
-private:
-  SnapshotEngine* mEngine = nullptr;
-  int mVoiceNum = 0;
-  bool mPressed = false;
-};
-
-// ----------------------------------------------------------------------
 // Mode Relatif : gros bouton "PHOTO" (maintenu = analyse en direct, relache
 // = la derniere analyse est gardee en memoire) et bouton "CORBEILLE" (vide
 // la memoire). Ce sont de VRAIS parametres : REAPER les voit et peut leur
@@ -60,6 +19,29 @@ public:
 
 protected:
   bool Pressed() const { return GetValue() > 0.5; }
+};
+
+// Bouton de capture d'une voix (mode Boutons) : maintenu = analyse en direct,
+// relache = gel. Lie au parametre "Capture N".
+class CaptureButtonControl : public MomentaryParamButton
+{
+public:
+  CaptureButtonControl(const IRECT& bounds, int paramIdx, int voiceNum)
+  : MomentaryParamButton(bounds, paramIdx), mVoiceNum(voiceNum) {}
+
+  void Draw(IGraphics& g) override
+  {
+    IColor fill = Pressed() ? IColor(255, 220, 80, 80) : IColor(255, 90, 90, 100);
+    g.FillRoundRect(fill, mRECT, 4.f);
+    g.DrawRoundRect(COLOR_WHITE, mRECT, 4.f);
+    char label[8];
+    snprintf(label, sizeof(label), "%d", mVoiceNum);
+    IText txt(11.f, COLOR_WHITE, "Roboto-Regular", EAlign::Center, EVAlign::Middle);
+    g.DrawText(txt, label, mRECT);
+  }
+
+private:
+  int mVoiceNum;
 };
 
 class PhotoHoldControl : public MomentaryParamButton
@@ -132,6 +114,12 @@ Photo::Photo(const InstanceInfo& info)
   GetParam(kParamKbFine)->InitDouble("Clavier Fine", 0., -20., 20., 0.1, "Hz");
   GetParam(kParamPhotoHold)->InitBool("Photo", false);
   GetParam(kParamTrash)->InitBool("Corbeille", false);
+  for (int v = 0; v < kNumVoices; v++)
+  {
+    char name[24];
+    snprintf(name, sizeof(name), "Capture %d", v + 1);
+    GetParam(CaptureParam(v))->InitBool(name, false);
+  }
 
   for (int v = 0; v < kNumVoices; v++)
   {
@@ -197,9 +185,8 @@ Photo::Photo(const InstanceInfo& info)
       IRECT octArea = IRECT(col.L, volArea.B, col.R, volArea.B + 26.f);
       IRECT fineArea = IRECT(col.L, octArea.B, col.R, octArea.B + 50.f);
 
-#if IPLUG_DSP
-      pGraphics->AttachControl(new PhotoButtonControl(btnArea.GetPadded(-3.f), &mSnapshots[v], v + 1));
-#endif
+      mParamControls[CaptureParam(v)] = new CaptureButtonControl(btnArea.GetPadded(-3.f), CaptureParam(v), v + 1);
+      pGraphics->AttachControl(mParamControls[CaptureParam(v)]);
       mParamControls[VoiceParam(v, kVoiceVolume)] = new IVKnobControl(volArea.GetCentredInside(44.f), VoiceParam(v, kVoiceVolume), "Vol", tinyStyle);
       pGraphics->AttachControl(mParamControls[VoiceParam(v, kVoiceVolume)]);
       mParamControls[VoiceParam(v, kVoiceOctave)] = new IVMenuButtonControl(octArea.GetPadded(-2.f), VoiceParam(v, kVoiceOctave), "");
@@ -322,6 +309,13 @@ void Photo::OnParamChange(int paramIdx)
   // audio qui agit (ProcessBlock).
   if (paramIdx == kParamPhotoHold) { mPhotoHeld.store(GetParam(kParamPhotoHold)->Value() > 0.5); return; }
   if (paramIdx == kParamTrash) { if (GetParam(kParamTrash)->Value() > 0.5) mTrashEdge.store(true); return; }
+  // 12 boutons de capture (mode Boutons) : le parametre est la seule source
+  // (clic, CC, note ou automation assignes dans REAPER).
+  if (paramIdx >= kParamCaptureStart && paramIdx < kParamCaptureStart + kNumVoices)
+  {
+    mSnapshots[paramIdx - kParamCaptureStart].SetCapture(GetParam(paramIdx)->Value() > 0.5);
+    return;
+  }
 
   // Seuls ces parametres reconstruisent la table d'onde.
   if (paramIdx == kParamBaseShape || paramIdx == kParamSkew
@@ -398,14 +392,6 @@ void Photo::ProcessMidiMsg(const IMidiMsg& msg)
             mSnapshots[v].NoteOff();
       }
       break;
-    case IMidiMsg::kControlChange:
-    {
-      // CC 20..31 -> boutons de capture des voix 1..12 (127 = capture).
-      int v = (int)msg.ControlChangeIdx() - kCaptureCCBase;
-      if (v >= 0 && v < kNumVoices)
-        mSnapshots[v].SetMidiCapture(msg.mData2 >= 127);
-      break;
-    }
     default:
       break;
   }
