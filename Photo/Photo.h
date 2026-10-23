@@ -59,8 +59,9 @@ enum EParams
   kParamTrash,     // mode Relatif : vide la memoire
   kParamCaptureStart, // 12 boutons de capture (mode Boutons), un parametre 0/1 chacun
   kParamTuneStart = kParamCaptureStart + kNumVoices, // tempérament : 12 corrections en cents (Do..Si)
-  kParamTuneOctStart = kParamTuneStart + tuning::kNumPitchClasses, // 11 corrections par octave (touche/12 = 0..10)
-  kNumParams = kParamTuneOctStart + tuning::kNumOctaves
+  kParamTuneStretch = kParamTuneStart + tuning::kNumPitchClasses, // projection d'octave (cents par octave, cumulative)
+  kParamTuneRoot,  // note racine du tempérament (0 = Do ... 11 = Si)
+  kNumParams
 };
 
 // Helper : indice du parametre pour la voix "voiceIdx" (0-11), which =
@@ -116,7 +117,7 @@ private:
   void UpdateEngine();
 
   // Frequence / rapport d'une touche MIDI selon le tempérament courant.
-  void ReadTuning(double* pc, double* oct) const;
+  void ReadTuning(double* dev, int& root, double& stretch) const;
   float TunedFreq(int note) const;
   float TunedRatio(int note) const;
 

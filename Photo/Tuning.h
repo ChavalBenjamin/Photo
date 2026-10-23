@@ -3,14 +3,13 @@
 #include <cmath>
 
 // ============================================================================
-// Tempérament : correction en cents par classe de hauteur (12) + correction
-// par octave (11, octaves MIDI 0..10 : touche / 12). Reference fixe : La 440 Hz
-// (MIDI 69). Tout a 0 = tempérament égal.
+// Tempérament : 12 corrections en cents (par degre a partir d'une note racine)
+// + une projection d'octave cumulative. Base : tempérament égal, La 440 Hz.
+// Tout a 0 = tempérament égal.
 // ============================================================================
 namespace tuning {
 
 static constexpr int kNumPitchClasses = 12; // 0 = Do, 1 = Do#, ... 11 = Si
-static constexpr int kNumOctaves = 11;      // touche / 12 : 0..10
 
 // Pitch multipliers du menu Octave (index = valeur du parametre enum).
 // L'ordre des 9 premiers est historique (projets deja enregistres).
@@ -27,21 +26,25 @@ inline float PitchMultiplier(int idx)
 }
 
 // Frequence (Hz) d'une touche MIDI.
-inline double Frequency(int note, const double* pcCents, const double* octCents)
+//  dev[12]  : correction en cents par DEGRE a partir de la racine (0 = racine)
+//  root     : classe de hauteur de la racine (0 = Do ... 11 = Si)
+//  stretchCents : projection d'octave, cumulative, continue : + stretch cents
+//                 par octave au-dessus de la touche 60, - en dessous.
+// Base : tempérament égal, La 440 Hz.
+inline double Frequency(int note, const double* dev, int root, double stretchCents)
 {
   if (note < 0) note = 0;
   if (note > 127) note = 127;
-  const int pc = note % 12;
-  const int oc = note / 12;
-  const double cents = pcCents[pc] + octCents[oc];
+  const int deg = (((note % 12) - root) % 12 + 12) % 12;
+  const double cents = dev[deg] + stretchCents * ((double)(note - 60)) / 12.0;
   return 440.0 * std::pow(2.0, ((double)(note - 69)) / 12.0 + cents / 1200.0);
 }
 
 // Rapport de transposition d'une touche par rapport a la touche 60
 // (Do central = photo telle quelle).
-inline double Ratio(int note, const double* pcCents, const double* octCents)
+inline double Ratio(int note, const double* dev, int root, double stretchCents)
 {
-  return Frequency(note, pcCents, octCents) / Frequency(60, pcCents, octCents);
+  return Frequency(note, dev, root, stretchCents) / Frequency(60, dev, root, stretchCents);
 }
 
 // La Monte Young - The Well-Tuned Piano. Hauteur (en cents au-dessus de la
@@ -55,16 +58,16 @@ static constexpr double kYoungCents[13] = {
   701.955001, 737.651813, 968.825906, 941.561815, 1172.735908, 1200.0
 };
 
-// Ecart par classe de hauteur (0 = Do) par rapport au tempérament égal,
-// La = 440 Hz fixe, Mi bemol (pc 3) = tonique.
+// Preset Young : racine = Mi bemol (pc 3), corrections par degre au-dessus de
+// la racine (degre 0 = tonique). Avec la racine a Mi bemol, le La reste a 440 Hz.
+static constexpr int kYoungRoot = 3;
 inline void YoungDeviations(double out[12])
 {
-  const double aOffset = kYoungCents[6] - 600.0; // la touche 6 (= La) reste a 440 Hz
-  for (int pc = 0; pc < 12; pc++)
+  const double aOffset = kYoungCents[6] - 600.0;
+  for (int k = 0; k < 12; k++)
   {
-    int k = ((pc - 3) % 12 + 12) % 12; // degre au-dessus de Mi bemol
-    if (k == 0) k = 12;
-    out[pc] = (kYoungCents[k] - 100.0 * k) - aOffset;
+    const int kk = (k == 0) ? 12 : k;
+    out[k] = (kYoungCents[kk] - 100.0 * kk) - aOffset;
   }
 }
 

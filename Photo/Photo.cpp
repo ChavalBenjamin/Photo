@@ -145,19 +145,15 @@ Photo::Photo(const InstanceInfo& info)
     GetParam(CaptureParam(v))->InitBool(name, false);
   }
 
-  static const char* kPcNames[12] = { "Do", "Do#", "Re", "Mib", "Mi", "Fa", "Fa#", "Sol", "Sol#", "La", "Sib", "Si" };
+  GetParam(kParamTuneRoot)->InitEnum("Tune Racine", 0, 12, "", IParam::kFlagsNone, "",
+    "Do", "Do#", "Re", "Mib", "Mi", "Fa", "Fa#", "Sol", "Sol#", "La", "Sib", "Si");
   for (int i = 0; i < tuning::kNumPitchClasses; i++)
   {
     char name[24];
-    snprintf(name, sizeof(name), "Cents %s", kPcNames[i]);
+    snprintf(name, sizeof(name), "Tune Cents %d", i);
     GetParam(kParamTuneStart + i)->InitDouble(name, 0., -200., 200., 0.01, "ct");
   }
-  for (int i = 0; i < tuning::kNumOctaves; i++)
-  {
-    char name[24];
-    snprintf(name, sizeof(name), "Cents Oct %d", i - 1);
-    GetParam(kParamTuneOctStart + i)->InitDouble(name, 0., -100., 100., 0.01, "ct");
-  }
+  GetParam(kParamTuneStretch)->InitDouble("Tune Octave", 0., -100., 100., 0.01, "ct");
 
   for (int v = 0; v < kNumVoices; v++)
   {
@@ -283,27 +279,25 @@ Photo::Photo(const InstanceInfo& info)
     attachTune(new IVButtonControl(IRECT(tb.L, tb.T + 50.f, tb.L + 150.f, tb.T + 84.f), [this](IControl*) { ApplyTuningPreset(0); }, "Egal", knobStyle));
     attachTune(new IVButtonControl(IRECT(tb.L + 165.f, tb.T + 50.f, tb.L + 365.f, tb.T + 84.f), [this](IControl*) { ApplyTuningPreset(1); }, "La Monte Young", knobStyle));
 
-    attachTune(new ITextControl(IRECT(tb.L, tb.T + 110.f, tb.R, tb.T + 134.f), "Correction par note (cents)", IText(14.f, COLOR_LIGHT_GRAY, "Roboto-Regular", EAlign::Near, EVAlign::Middle)));
+    attachTune(new IVMenuButtonControl(IRECT(tb.L + 380.f, tb.T + 50.f, tb.L + 520.f, tb.T + 84.f), kParamTuneRoot, "Racine", knobStyle));
+    mParamControls[kParamTuneRoot] = mTuneControls.back();
+
+    attachTune(new ITextControl(IRECT(tb.L, tb.T + 110.f, tb.R, tb.T + 134.f), "Correction en cents, par degre a partir de la racine (R = racine, +1 = un demi-ton au-dessus...)", IText(14.f, COLOR_LIGHT_GRAY, "Roboto-Regular", EAlign::Near, EVAlign::Middle)));
     const IRECT noteRow = IRECT(tb.L, tb.T + 136.f, tb.R, tb.T + 250.f);
-    static const char* kLbl[12] = { "Do", "Do#", "Re", "Mib", "Mi", "Fa", "Fa#", "Sol", "Sol#", "La", "Sib", "Si" };
     for (int i = 0; i < tuning::kNumPitchClasses; i++)
     {
-      mParamControls[kParamTuneStart + i] = new IVKnobControl(noteRow.GetGridCell(0, i, 1, 12).GetCentredInside(68.f), kParamTuneStart + i, kLbl[i], knobStyle);
+      char lbl[8];
+      if (i == 0) snprintf(lbl, sizeof(lbl), "R"); else snprintf(lbl, sizeof(lbl), "+%d", i);
+      mParamControls[kParamTuneStart + i] = new IVKnobControl(noteRow.GetGridCell(0, i, 1, 12).GetCentredInside(68.f), kParamTuneStart + i, lbl, knobStyle, true);
       attachTune(mParamControls[kParamTuneStart + i]);
     }
 
-    attachTune(new ITextControl(IRECT(tb.L, tb.T + 280.f, tb.R, tb.T + 304.f), "Correction par octave (cents) - octave 4 = Do central (touche 60)", IText(14.f, COLOR_LIGHT_GRAY, "Roboto-Regular", EAlign::Near, EVAlign::Middle)));
-    const IRECT octRow = IRECT(tb.L, tb.T + 306.f, tb.R, tb.T + 420.f);
-    for (int i = 0; i < tuning::kNumOctaves; i++)
-    {
-      char lbl[16];
-      snprintf(lbl, sizeof(lbl), "Oct %d", i - 1);
-      mParamControls[kParamTuneOctStart + i] = new IVKnobControl(octRow.GetGridCell(0, i, 1, 11).GetCentredInside(68.f), kParamTuneOctStart + i, lbl, knobStyle);
-      attachTune(mParamControls[kParamTuneOctStart + i]);
-    }
+    attachTune(new ITextControl(IRECT(tb.L, tb.T + 280.f, tb.R, tb.T + 304.f), "Projection d'octave (cents par octave, cumulative, pivot = Do central)", IText(14.f, COLOR_LIGHT_GRAY, "Roboto-Regular", EAlign::Near, EVAlign::Middle)));
+    mParamControls[kParamTuneStretch] = new IVKnobControl(IRECT(tb.L, tb.T + 306.f, tb.L + 120.f, tb.T + 420.f).GetCentredInside(68.f), kParamTuneStretch, "Octave", knobStyle, true);
+    attachTune(mParamControls[kParamTuneStretch]);
 
     attachTune(new ITextControl(IRECT(tb.L, tb.T + 450.f, tb.R, tb.T + 520.f),
-      "Double-clic sur un potard : taper la valeur. Le tempérament sert aux modes Synthe (frequence des touches) et Relatif (rapport touche / Do central).",
+      "Clic sur la valeur sous un potard : taper la valeur. Double-clic sur un potard : remise a 0. Racine : mode Synthe seulement (en Relatif l echelle part toujours du Do central).",
       IText(12.f, COLOR_LIGHT_GRAY, "Roboto-Regular", EAlign::Near, EVAlign::Top)));
   };
 #endif
@@ -344,8 +338,8 @@ void Photo::SetTuningView(bool open)
 // enregistre le changement et que les potards se mettent a jour.
 void Photo::ApplyTuningPreset(int preset)
 {
-  double pc[tuning::kNumPitchClasses] = { 0. };
-  if (preset == 1) tuning::YoungDeviations(pc);
+  double dev[tuning::kNumPitchClasses] = { 0. };
+  if (preset == 1) tuning::YoungDeviations(dev);
 
   auto setParam = [&](int idx, double value) {
     IParam* p = GetParam(idx);
@@ -360,8 +354,9 @@ void Photo::ApplyTuningPreset(int preset)
     }
     EndInformHostOfParamChangeFromUI(idx);
   };
-  for (int i = 0; i < tuning::kNumPitchClasses; i++) setParam(kParamTuneStart + i, pc[i]);
-  for (int i = 0; i < tuning::kNumOctaves; i++) setParam(kParamTuneOctStart + i, 0.);
+  for (int i = 0; i < tuning::kNumPitchClasses; i++) setParam(kParamTuneStart + i, dev[i]);
+  setParam(kParamTuneStretch, 0.);
+  setParam(kParamTuneRoot, preset == 1 ? tuning::kYoungRoot : 0);
 }
 
 void Photo::SyncUIToState()
@@ -434,27 +429,30 @@ void Photo::OnParamChange(int paramIdx)
     UpdateEngine();
 }
 
-void Photo::ReadTuning(double* pc, double* oct) const
+void Photo::ReadTuning(double* dev, int& root, double& stretch) const
 {
-  for (int i = 0; i < tuning::kNumPitchClasses; i++) pc[i] = GetParam(kParamTuneStart + i)->Value();
-  for (int i = 0; i < tuning::kNumOctaves; i++) oct[i] = GetParam(kParamTuneOctStart + i)->Value();
+  for (int i = 0; i < tuning::kNumPitchClasses; i++) dev[i] = GetParam(kParamTuneStart + i)->Value();
+  root = (int)GetParam(kParamTuneRoot)->Value();
+  stretch = GetParam(kParamTuneStretch)->Value();
 }
 
-// Frequence d'une touche MIDI selon le tempérament courant (La 440 Hz).
+// Frequence d'une touche MIDI selon le tempérament courant.
 float Photo::TunedFreq(int note) const
 {
-  double pc[tuning::kNumPitchClasses], oct[tuning::kNumOctaves];
-  ReadTuning(pc, oct);
-  return (float)tuning::Frequency(note, pc, oct);
+  double dev[tuning::kNumPitchClasses], stretch; int root;
+  ReadTuning(dev, root, stretch);
+  return (float)tuning::Frequency(note, dev, root, stretch);
 }
 
 // Rapport de transposition d'une touche par rapport a la touche 60
 // (Do central = photo telle quelle), selon le tempérament courant.
+// La note racine ne compte pas ici : l'echelle est toujours lue a partir du Do.
 float Photo::TunedRatio(int note) const
 {
-  double pc[tuning::kNumPitchClasses], oct[tuning::kNumOctaves];
-  ReadTuning(pc, oct);
-  return (float)tuning::Ratio(note, pc, oct);
+  double dev[tuning::kNumPitchClasses], stretch; int root;
+  ReadTuning(dev, root, stretch);
+  (void)root; // Relatif : la reference est toujours le Do central, donc racine = Do
+  return (float)tuning::Ratio(note, dev, 0, stretch);
 }
 
 int Photo::AllocVoice()
