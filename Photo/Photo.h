@@ -4,8 +4,10 @@
 #include "WaveTableEngine.h"
 #include "SnapShotEngine.h"
 #include "SpectralCurvePreviewControl.h"
+#include "Tuning.h"
 #include <atomic>
 #include <mutex>
+#include <vector>
 
 // ============================================================================
 // Photo - moteur de table d'onde (forme de base + 16 harmoniques + Skew)
@@ -56,7 +58,9 @@ enum EParams
   kParamPhotoHold, // mode Relatif : bouton Photo (maintenu = analyse en direct, relache = memoire)
   kParamTrash,     // mode Relatif : vide la memoire
   kParamCaptureStart, // 12 boutons de capture (mode Boutons), un parametre 0/1 chacun
-  kNumParams = kParamCaptureStart + kNumVoices
+  kParamTuneStart = kParamCaptureStart + kNumVoices, // tempérament : 12 corrections en cents (Do..Si)
+  kParamTuneOctStart = kParamTuneStart + tuning::kNumPitchClasses, // 11 corrections par octave (touche/12 = 0..10)
+  kNumParams = kParamTuneOctStart + tuning::kNumOctaves
 };
 
 // Helper : indice du parametre pour la voix "voiceIdx" (0-11), which =
@@ -77,7 +81,12 @@ public:
 
   void OnIdle() override;
   void OnUIOpen() override { SyncUIToState(); }
-  void OnUIClose() override { mWaveView = nullptr; mPhotoBtn = nullptr; for (auto& c : mParamControls) c = nullptr; }
+  void OnUIClose() override
+  {
+    mWaveView = nullptr; mPhotoBtn = nullptr; mTabBtn = nullptr;
+    mMainControls.clear(); mTuneControls.clear(); mTuningOpen = false;
+    for (auto& c : mParamControls) c = nullptr;
+  }
 
 #if IPLUG_DSP
   void ProcessBlock(sample** inputs, sample** outputs, int nFrames) override;
@@ -91,11 +100,25 @@ private:
   IControl* mPhotoBtn = nullptr;
   IControl* mParamControls[kNumParams] = { nullptr };
 
+  // Onglet Tempérament : les controles principaux sont caches pendant que
+  // le panneau de tempérament est affiche (et inversement).
+  IControl* mTabBtn = nullptr;
+  std::vector<IControl*> mMainControls;
+  std::vector<IControl*> mTuneControls;
+  bool mTuningOpen = false;
+  void SetTuningView(bool open);
+  void ApplyTuningPreset(int preset); // 0 = Egal, 1 = La Monte Young
+
   void ApplyAllState();
   void SyncUIToState();
 
 #if IPLUG_DSP
   void UpdateEngine();
+
+  // Frequence / rapport d'une touche MIDI selon le tempérament courant.
+  void ReadTuning(double* pc, double* oct) const;
+  float TunedFreq(int note) const;
+  float TunedRatio(int note) const;
 
   // Protege le moteur : RebuildIfNeeded() (thread principal, a chaque
   // changement de potard Harm/Skew) ne doit jamais s'executer en meme

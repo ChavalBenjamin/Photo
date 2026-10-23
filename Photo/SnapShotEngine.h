@@ -317,6 +317,13 @@ public:
     mOctaveRatioTarget = std::pow(2.f, (float)mOctaveShift);
   }
 
+  // Multiplicateur de hauteur quelconque (1/16 .. 16) : octaves, mais aussi
+  // x1.125, x1.2, x1.25, x1.5, x3, /3...
+  void SetPitchMultiplier(float r)
+  {
+    mOctaveRatioTarget = std::clamp(r, 1.f / 16.f, 16.f);
+  }
+
   // Ajustement fin, en Hz, ajoute a CHAQUE partiel APRES l'octave.
   void SetFineTuneHz(float hz) { mFineTuneHz = std::clamp(hz, -20.f, 20.f); }
 

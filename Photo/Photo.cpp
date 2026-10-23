@@ -2,6 +2,7 @@
 #include "IPlug_include_in_plug_src.h"
 #include "IControls.h"
 #include <cmath>
+#include <functional>
 
 // ----------------------------------------------------------------------
 // Mode Relatif : gros bouton "PHOTO" (maintenu = analyse en direct, relache
@@ -83,6 +84,28 @@ public:
   }
 };
 
+// Bouton d'onglet (haut a droite) : bascule entre l'ecran principal et le
+// panneau Temperament.
+class TabButtonControl : public IControl
+{
+public:
+  TabButtonControl(const IRECT& bounds, std::function<void()> onClick) : IControl(bounds), mOnClick(onClick) {}
+
+  void Draw(IGraphics& g) override
+  {
+    g.FillRoundRect(mOpen ? IColor(255, 232, 140, 40) : IColor(255, 70, 70, 85), mRECT, 4.f);
+    g.DrawRoundRect(COLOR_WHITE, mRECT, 4.f);
+    IText txt(11.f, mOpen ? COLOR_BLACK : COLOR_WHITE, "Roboto-Regular", EAlign::Center, EVAlign::Middle);
+    g.DrawText(txt, mOpen ? "< RETOUR" : "TEMPERAMENT >", mRECT);
+  }
+  void OnMouseDown(float x, float y, const IMouseMod& mod) override { if (mOnClick) mOnClick(); }
+  void SetOpen(bool open) { mOpen = open; SetDirty(false); }
+
+private:
+  std::function<void()> mOnClick;
+  bool mOpen = false;
+};
+
 Photo::Photo(const InstanceInfo& info)
 : iplug::Plugin(info, MakeConfig(kNumParams, 1))
 {
@@ -109,8 +132,9 @@ Photo::Photo(const InstanceInfo& info)
   GetParam(kParamRelease)->InitDouble("Release", 300., 1., 8000., 0.1, "ms");
   GetParam(kParamVelSens)->InitPercentage("Velocite", 100.);
   GetParam(kParamKbVolume)->InitPercentage("Clavier Volume", 100.);
-  GetParam(kParamKbOctave)->InitEnum("Clavier Octave", 4, 9, "", IParam::kFlagsNone, "",
-                                      "/16", "/8", "/4", "/2", "1", "x2", "x4", "x8", "x16");
+  GetParam(kParamKbOctave)->InitEnum("Clavier Octave", 4, 15, "", IParam::kFlagsNone, "",
+                                      "/16", "/8", "/4", "/2", "1", "x2", "x4", "x8", "x16",
+                                      "x1.125", "x1.2", "x1.25", "x1.5", "x3", "/3");
   GetParam(kParamKbFine)->InitDouble("Clavier Fine", 0., -20., 20., 0.1, "Hz");
   GetParam(kParamPhotoHold)->InitBool("Photo", false);
   GetParam(kParamTrash)->InitBool("Corbeille", false);
@@ -121,6 +145,20 @@ Photo::Photo(const InstanceInfo& info)
     GetParam(CaptureParam(v))->InitBool(name, false);
   }
 
+  static const char* kPcNames[12] = { "Do", "Do#", "Re", "Mib", "Mi", "Fa", "Fa#", "Sol", "Sol#", "La", "Sib", "Si" };
+  for (int i = 0; i < tuning::kNumPitchClasses; i++)
+  {
+    char name[24];
+    snprintf(name, sizeof(name), "Cents %s", kPcNames[i]);
+    GetParam(kParamTuneStart + i)->InitDouble(name, 0., -200., 200., 0.01, "ct");
+  }
+  for (int i = 0; i < tuning::kNumOctaves; i++)
+  {
+    char name[24];
+    snprintf(name, sizeof(name), "Cents Oct %d", i - 1);
+    GetParam(kParamTuneOctStart + i)->InitDouble(name, 0., -100., 100., 0.01, "ct");
+  }
+
   for (int v = 0; v < kNumVoices; v++)
   {
     char nameVol[24], nameOct[24], nameFine[24];
@@ -129,8 +167,9 @@ Photo::Photo(const InstanceInfo& info)
     snprintf(nameFine, sizeof(nameFine), "V%d Fine", v + 1);
 
     GetParam(VoiceParam(v, kVoiceVolume))->InitPercentage(nameVol, 100.);
-    GetParam(VoiceParam(v, kVoiceOctave))->InitEnum(nameOct, 4, 9, "", IParam::kFlagsNone, "",
-                                                      "/16", "/8", "/4", "/2", "1", "x2", "x4", "x8", "x16");
+    GetParam(VoiceParam(v, kVoiceOctave))->InitEnum(nameOct, 4, 15, "", IParam::kFlagsNone, "",
+                                                      "/16", "/8", "/4", "/2", "1", "x2", "x4", "x8", "x16",
+                                      "x1.125", "x1.2", "x1.25", "x1.5", "x3", "/3");
     GetParam(VoiceParam(v, kVoiceFine))->InitDouble(nameFine, 0., -20., 20., 0.1, "Hz");
   }
 
@@ -150,16 +189,22 @@ Photo::Photo(const InstanceInfo& info)
 
     const IRECT bounds = pGraphics->GetBounds();
 
+    mMainControls.clear();
+    mTuneControls.clear();
+    mTuningOpen = false;
+    auto attachMain = [&](IControl* ctl) { pGraphics->AttachControl(ctl); mMainControls.push_back(ctl); };
+    auto attachTune = [&](IControl* ctl) { pGraphics->AttachControl(ctl); ctl->Hide(true); mTuneControls.push_back(ctl); };
+
     // --- Forme de base, Skew, Lissage Freq ---
     IRECT topRow = bounds.GetFromTop(100.f).GetPadded(-10.f);
     mParamControls[kParamBaseShape] = new IVMenuButtonControl(topRow.GetGridCell(0, 0, 1, 4).GetCentredInside(160.f, 44.f), kParamBaseShape, "Forme de base");
-    pGraphics->AttachControl(mParamControls[kParamBaseShape]);
+    attachMain(mParamControls[kParamBaseShape]);
     mParamControls[kParamSkew] = new IVKnobControl(topRow.GetGridCell(0, 1, 1, 4).GetCentredInside(64.f), kParamSkew, "Skew", knobStyle);
-    pGraphics->AttachControl(mParamControls[kParamSkew]);
+    attachMain(mParamControls[kParamSkew]);
     mParamControls[kParamFreqSmooth] = new IVKnobControl(topRow.GetGridCell(0, 2, 1, 4).GetCentredInside(64.f), kParamFreqSmooth, "Obturateur", knobStyle);
-    pGraphics->AttachControl(mParamControls[kParamFreqSmooth]);
+    attachMain(mParamControls[kParamFreqSmooth]);
     mParamControls[kParamStereoHz] = new IVKnobControl(topRow.GetGridCell(0, 3, 1, 4).GetCentredInside(64.f), kParamStereoHz, "Ecart D/G", knobStyle);
-    pGraphics->AttachControl(mParamControls[kParamStereoHz]);
+    attachMain(mParamControls[kParamStereoHz]);
 
     // --- 16 harmoniques, en 2 rangees de 8 ---
     IRECT harmRow1 = IRECT(bounds.L, topRow.B, bounds.R, topRow.B + 90.f).GetPadded(-10.f);
@@ -167,12 +212,12 @@ Photo::Photo(const InstanceInfo& info)
     for (int h = 0; h < 8; h++)
     {
       mParamControls[kParamHarmonic1 + h] = new IVKnobControl(harmRow1.GetGridCell(0, h, 1, 8).GetCentredInside(56.f), kParamHarmonic1 + h, "", knobStyle);
-      pGraphics->AttachControl(mParamControls[kParamHarmonic1 + h]);
+      attachMain(mParamControls[kParamHarmonic1 + h]);
     }
     for (int h = 8; h < 16; h++)
     {
       mParamControls[kParamHarmonic1 + h] = new IVKnobControl(harmRow2.GetGridCell(0, h - 8, 1, 8).GetCentredInside(56.f), kParamHarmonic1 + h, "", knobStyle);
-      pGraphics->AttachControl(mParamControls[kParamHarmonic1 + h]);
+      attachMain(mParamControls[kParamHarmonic1 + h]);
     }
 
     // --- 12 voix "photo", en colonnes : bouton / volume / octave / fine ---
@@ -186,30 +231,30 @@ Photo::Photo(const InstanceInfo& info)
       IRECT fineArea = IRECT(col.L, octArea.B, col.R, octArea.B + 50.f);
 
       mParamControls[CaptureParam(v)] = new CaptureButtonControl(btnArea.GetPadded(-3.f), CaptureParam(v), v + 1);
-      pGraphics->AttachControl(mParamControls[CaptureParam(v)]);
+      attachMain(mParamControls[CaptureParam(v)]);
       mParamControls[VoiceParam(v, kVoiceVolume)] = new IVKnobControl(volArea.GetCentredInside(44.f), VoiceParam(v, kVoiceVolume), "Vol", tinyStyle);
-      pGraphics->AttachControl(mParamControls[VoiceParam(v, kVoiceVolume)]);
+      attachMain(mParamControls[VoiceParam(v, kVoiceVolume)]);
       mParamControls[VoiceParam(v, kVoiceOctave)] = new IVMenuButtonControl(octArea.GetPadded(-2.f), VoiceParam(v, kVoiceOctave), "");
-      pGraphics->AttachControl(mParamControls[VoiceParam(v, kVoiceOctave)]);
+      attachMain(mParamControls[VoiceParam(v, kVoiceOctave)]);
       mParamControls[VoiceParam(v, kVoiceFine)] = new IVKnobControl(fineArea.GetCentredInside(44.f), VoiceParam(v, kVoiceFine), "Fine", tinyStyle);
-      pGraphics->AttachControl(mParamControls[VoiceParam(v, kVoiceFine)]);
+      attachMain(mParamControls[VoiceParam(v, kVoiceFine)]);
     }
 
     // --- Mode Clavier : Mode / ADSR / Velocite / Volume / Octave / Fine ---
     IRECT kbRow = IRECT(bounds.L, voicesRow.B, bounds.R, voicesRow.B + 100.f).GetPadded(-10.f);
     mParamControls[kParamMode] = new IVMenuButtonControl(kbRow.GetGridCell(0, 0, 1, 9).GetCentredInside(90.f, 34.f), kParamMode, "Mode");
-    pGraphics->AttachControl(mParamControls[kParamMode]);
+    attachMain(mParamControls[kParamMode]);
     const int kbKnobs[] = { kParamAttack, kParamDecay, kParamSustain, kParamRelease, kParamVelSens, kParamKbVolume };
     const char* kbNames[] = { "Attaque", "Decay", "Sustain", "Release", "Velocite", "Volume" };
     for (int i = 0; i < 6; i++)
     {
       mParamControls[kbKnobs[i]] = new IVKnobControl(kbRow.GetGridCell(0, 1 + i, 1, 9).GetCentredInside(60.f), kbKnobs[i], kbNames[i], knobStyle);
-      pGraphics->AttachControl(mParamControls[kbKnobs[i]]);
+      attachMain(mParamControls[kbKnobs[i]]);
     }
     mParamControls[kParamKbOctave] = new IVMenuButtonControl(kbRow.GetGridCell(0, 7, 1, 9).GetCentredInside(70.f, 34.f), kParamKbOctave, "Octave");
-    pGraphics->AttachControl(mParamControls[kParamKbOctave]);
+    attachMain(mParamControls[kParamKbOctave]);
     mParamControls[kParamKbFine] = new IVKnobControl(kbRow.GetGridCell(0, 8, 1, 9).GetCentredInside(60.f), kParamKbFine, "Fine", knobStyle);
-    pGraphics->AttachControl(mParamControls[kParamKbFine]);
+    attachMain(mParamControls[kParamKbFine]);
 
     // --- Visualisation de la table d'onde (dessin a cabler plus tard) ---
     IRECT restArea = IRECT(bounds.L, kbRow.B, bounds.R, bounds.B).GetPadded(-20.f);
@@ -223,11 +268,43 @@ Photo::Photo(const InstanceInfo& info)
 #endif
     mPhotoBtn = new PhotoHoldControl(btnArea.GetFromTop(btnArea.H() * 0.68f).GetPadded(-4.f), kParamPhotoHold, memFlag);
     mParamControls[kParamPhotoHold] = mPhotoBtn;
-    pGraphics->AttachControl(mPhotoBtn);
+    attachMain(mPhotoBtn);
     mParamControls[kParamTrash] = new TrashControl(btnArea.GetFromBottom(btnArea.H() * 0.32f).GetPadded(-4.f), kParamTrash);
-    pGraphics->AttachControl(mParamControls[kParamTrash]);
+    attachMain(mParamControls[kParamTrash]);
     mWaveView = new SpectralCurvePreviewControl(waveArea);
-    pGraphics->AttachControl(mWaveView);
+    attachMain(mWaveView);
+
+    // --- Onglet Temperament (cache au depart) ---
+    mTabBtn = new TabButtonControl(IRECT(bounds.R - 140.f, bounds.T + 2.f, bounds.R - 10.f, bounds.T + 18.f), [this]() { SetTuningView(!mTuningOpen); });
+    pGraphics->AttachControl(mTabBtn);
+
+    const IRECT tb = bounds.GetPadded(-20.f);
+    attachTune(new ITextControl(IRECT(tb.L, tb.T + 4.f, tb.R - 150.f, tb.T + 36.f), "TEMPERAMENT  (La = 440 Hz fixe)", IText(20.f, COLOR_WHITE, "Roboto-Regular", EAlign::Near, EVAlign::Middle)));
+    attachTune(new IVButtonControl(IRECT(tb.L, tb.T + 50.f, tb.L + 150.f, tb.T + 84.f), [this](IControl*) { ApplyTuningPreset(0); }, "Egal", knobStyle));
+    attachTune(new IVButtonControl(IRECT(tb.L + 165.f, tb.T + 50.f, tb.L + 365.f, tb.T + 84.f), [this](IControl*) { ApplyTuningPreset(1); }, "La Monte Young", knobStyle));
+
+    attachTune(new ITextControl(IRECT(tb.L, tb.T + 110.f, tb.R, tb.T + 134.f), "Correction par note (cents)", IText(14.f, COLOR_LIGHT_GRAY, "Roboto-Regular", EAlign::Near, EVAlign::Middle)));
+    const IRECT noteRow = IRECT(tb.L, tb.T + 136.f, tb.R, tb.T + 250.f);
+    static const char* kLbl[12] = { "Do", "Do#", "Re", "Mib", "Mi", "Fa", "Fa#", "Sol", "Sol#", "La", "Sib", "Si" };
+    for (int i = 0; i < tuning::kNumPitchClasses; i++)
+    {
+      mParamControls[kParamTuneStart + i] = new IVKnobControl(noteRow.GetGridCell(0, i, 1, 12).GetCentredInside(68.f), kParamTuneStart + i, kLbl[i], knobStyle);
+      attachTune(mParamControls[kParamTuneStart + i]);
+    }
+
+    attachTune(new ITextControl(IRECT(tb.L, tb.T + 280.f, tb.R, tb.T + 304.f), "Correction par octave (cents) - octave 4 = Do central (touche 60)", IText(14.f, COLOR_LIGHT_GRAY, "Roboto-Regular", EAlign::Near, EVAlign::Middle)));
+    const IRECT octRow = IRECT(tb.L, tb.T + 306.f, tb.R, tb.T + 420.f);
+    for (int i = 0; i < tuning::kNumOctaves; i++)
+    {
+      char lbl[16];
+      snprintf(lbl, sizeof(lbl), "Oct %d", i - 1);
+      mParamControls[kParamTuneOctStart + i] = new IVKnobControl(octRow.GetGridCell(0, i, 1, 11).GetCentredInside(68.f), kParamTuneOctStart + i, lbl, knobStyle);
+      attachTune(mParamControls[kParamTuneOctStart + i]);
+    }
+
+    attachTune(new ITextControl(IRECT(tb.L, tb.T + 450.f, tb.R, tb.T + 520.f),
+      "Double-clic sur un potard : taper la valeur. Le tempérament sert aux modes Synthe (frequence des touches) et Relatif (rapport touche / Do central).",
+      IText(12.f, COLOR_LIGHT_GRAY, "Roboto-Regular", EAlign::Near, EVAlign::Top)));
   };
 #endif
 
@@ -251,6 +328,40 @@ void Photo::OnIdle()
     mWaveView->SetDirty(false);
   }
 #endif
+}
+
+void Photo::SetTuningView(bool open)
+{
+  mTuningOpen = open;
+  for (auto* ctl : mMainControls) ctl->Hide(open);
+  for (auto* ctl : mTuneControls) ctl->Hide(!open);
+  if (mTabBtn) static_cast<TabButtonControl*>(mTabBtn)->SetOpen(open);
+  if (GetUI()) GetUI()->SetAllControlsDirty();
+}
+
+// Preset : 0 = tempérament égal (tout a 0), 1 = La Monte Young.
+// Passe par les controles (comme un geste de l'utilisateur) pour que l'hote
+// enregistre le changement et que les potards se mettent a jour.
+void Photo::ApplyTuningPreset(int preset)
+{
+  double pc[tuning::kNumPitchClasses] = { 0. };
+  if (preset == 1) tuning::YoungDeviations(pc);
+
+  auto setParam = [&](int idx, double value) {
+    IParam* p = GetParam(idx);
+    const double norm = p->ToNormalized(value);
+    BeginInformHostOfParamChangeFromUI(idx);
+    if (mParamControls[idx])
+      mParamControls[idx]->SetValueFromUserInput(norm);
+    else
+    {
+      p->SetNormalized(norm);
+      InformHostOfParamChange(idx, norm);
+    }
+    EndInformHostOfParamChangeFromUI(idx);
+  };
+  for (int i = 0; i < tuning::kNumPitchClasses; i++) setParam(kParamTuneStart + i, pc[i]);
+  for (int i = 0; i < tuning::kNumOctaves; i++) setParam(kParamTuneOctStart + i, 0.);
 }
 
 void Photo::SyncUIToState()
@@ -323,19 +434,27 @@ void Photo::OnParamChange(int paramIdx)
     UpdateEngine();
 }
 
-// Frequence d'une touche MIDI. Pour l'instant : tempérament egal, La 440 Hz.
-// (Sera remplace par le tempérament choisi.)
-static float NoteFrequency(int note)
+void Photo::ReadTuning(double* pc, double* oct) const
 {
-  return 440.f * std::pow(2.f, ((float)note - 69.f) / 12.f);
+  for (int i = 0; i < tuning::kNumPitchClasses; i++) pc[i] = GetParam(kParamTuneStart + i)->Value();
+  for (int i = 0; i < tuning::kNumOctaves; i++) oct[i] = GetParam(kParamTuneOctStart + i)->Value();
 }
 
-// Rapport de transposition d'une touche par rapport a la touche de reference
-// (MIDI 60 = photo telle quelle). Tempérament egal pour l'instant.
-// (Sera remplace par le tempérament choisi.)
-static float NoteRatio(int note)
+// Frequence d'une touche MIDI selon le tempérament courant (La 440 Hz).
+float Photo::TunedFreq(int note) const
 {
-  return std::pow(2.f, ((float)note - 60.f) / 12.f);
+  double pc[tuning::kNumPitchClasses], oct[tuning::kNumOctaves];
+  ReadTuning(pc, oct);
+  return (float)tuning::Frequency(note, pc, oct);
+}
+
+// Rapport de transposition d'une touche par rapport a la touche 60
+// (Do central = photo telle quelle), selon le tempérament courant.
+float Photo::TunedRatio(int note) const
+{
+  double pc[tuning::kNumPitchClasses], oct[tuning::kNumOctaves];
+  ReadTuning(pc, oct);
+  return (float)tuning::Ratio(note, pc, oct);
 }
 
 int Photo::AllocVoice()
@@ -372,14 +491,14 @@ void Photo::ProcessMidiMsg(const IMidiMsg& msg)
           //  - bouton Photo maintenu : photo EN DIRECT (la voix la suit, voir ProcessBlock)
           //  - sinon, memoire pleine : la photo gardee
           //  - sinon : une photo figee prise a l'instant de la note
-          const float ratio = NoteRatio(msg.NoteNumber());
+          const float ratio = TunedRatio(msg.NoteNumber());
           if (!mPhotoHeld.load() && mMemValid.load())
             mSnapshots[v].NoteOnPhoto(mMem, mMemN, ratio, msg.NoteNumber(), velGain, ++mVoiceCounter);
           else
             mSnapshots[v].NoteOnPhoto(mAnalyzer.Peaks(), mAnalyzer.NumPeaks(), ratio, msg.NoteNumber(), velGain, ++mVoiceCounter);
         }
         else
-          mSnapshots[v].NoteOnTone(NoteFrequency(msg.NoteNumber()), kToneAmp, msg.NoteNumber(), velGain, ++mVoiceCounter);
+          mSnapshots[v].NoteOnTone(TunedFreq(msg.NoteNumber()), kToneAmp, msg.NoteNumber(), velGain, ++mVoiceCounter);
         break;
       }
       // velocite 0 : equivalent a un note-off
@@ -442,13 +561,13 @@ void Photo::ProcessBlock(sample** inputs, sample** outputs, int nFrames)
   {
     // Mode Boutons : reglages propres a chaque voix. Mode Clavier : globaux.
     float volume = kbMode ? kbVol : (float)(GetParam(VoiceParam(v, kVoiceVolume))->Value() / 100.0);
-    int octaveIdx = kbMode ? kbOct : (int)GetParam(VoiceParam(v, kVoiceOctave))->Value(); // 0-8, 4 = neutre
+    int octaveIdx = kbMode ? kbOct : (int)GetParam(VoiceParam(v, kVoiceOctave))->Value(); // 0-14, 4 = neutre
     float fineHz = kbMode ? kbFine : (float)GetParam(VoiceParam(v, kVoiceFine))->Value();
 
     mSnapshots[v].SetStereoOffsetHz(stereoHz);
     mSnapshots[v].SetShutterMs(shutterMs);
     mSnapshots[v].SetVolume(volume);
-    mSnapshots[v].SetOctaveShift(octaveIdx - 4);
+    mSnapshots[v].SetPitchMultiplier(tuning::PitchMultiplier(octaveIdx));
     mSnapshots[v].SetFineTuneHz(fineHz);
     mSnapshots[v].SetEnvEnabled(kbMode);
     mSnapshots[v].SetAdsr(atk, dec, sus, rel);
