@@ -61,6 +61,7 @@ enum EParams
   kParamTuneStart = kParamCaptureStart + kNumVoices, // tempérament : 12 corrections en cents (Do..Si)
   kParamTuneStretch = kParamTuneStart + tuning::kNumPitchClasses, // projection d'octave (cents par octave, cumulative)
   kParamTuneRoot,  // note racine du tempérament (0 = Do ... 11 = Si)
+  kParamTuneGlobal, // hauteur globale en cents (mode Synthe)
   kNumParams
 };
 
@@ -117,7 +118,7 @@ private:
   void UpdateEngine();
 
   // Frequence / rapport d'une touche MIDI selon le tempérament courant.
-  void ReadTuning(double* dev, int& root, double& stretch) const;
+  void ReadTuning(double* dev, int& root, double& stretch, double& global) const;
   float TunedFreq(int note) const;
   float TunedRatio(int note) const;
 

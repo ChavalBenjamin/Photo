@@ -132,9 +132,9 @@ Photo::Photo(const InstanceInfo& info)
   GetParam(kParamRelease)->InitDouble("Release", 300., 1., 8000., 0.1, "ms");
   GetParam(kParamVelSens)->InitPercentage("Velocite", 100.);
   GetParam(kParamKbVolume)->InitPercentage("Clavier Volume", 100.);
-  GetParam(kParamKbOctave)->InitEnum("Clavier Octave", 4, 15, "", IParam::kFlagsNone, "",
-                                      "/16", "/8", "/4", "/2", "1", "x2", "x4", "x8", "x16",
-                                      "x1.125", "x1.2", "x1.25", "x1.5", "x3", "/3");
+  GetParam(kParamKbOctave)->InitEnum("Clavier Octave", tuning::kPitchNeutralIdx, 15, "", IParam::kFlagsNone, "",
+                                      "/16", "/8", "/4", "/3", "/2", "1",
+                                      "x1.125", "x1.2", "x1.25", "x1.5", "x2", "x3", "x4", "x8", "x16");
   GetParam(kParamKbFine)->InitDouble("Clavier Fine", 0., -20., 20., 0.1, "Hz");
   GetParam(kParamPhotoHold)->InitBool("Photo", false);
   GetParam(kParamTrash)->InitBool("Corbeille", false);
@@ -154,6 +154,7 @@ Photo::Photo(const InstanceInfo& info)
     GetParam(kParamTuneStart + i)->InitDouble(name, 0., -200., 200., 0.01, "ct");
   }
   GetParam(kParamTuneStretch)->InitDouble("Tune Octave", 0., -100., 100., 0.01, "ct");
+  GetParam(kParamTuneGlobal)->InitDouble("Tune Hauteur", 0., -100., 100., 0.01, "ct");
 
   for (int v = 0; v < kNumVoices; v++)
   {
@@ -163,9 +164,9 @@ Photo::Photo(const InstanceInfo& info)
     snprintf(nameFine, sizeof(nameFine), "V%d Fine", v + 1);
 
     GetParam(VoiceParam(v, kVoiceVolume))->InitPercentage(nameVol, 100.);
-    GetParam(VoiceParam(v, kVoiceOctave))->InitEnum(nameOct, 4, 15, "", IParam::kFlagsNone, "",
-                                                      "/16", "/8", "/4", "/2", "1", "x2", "x4", "x8", "x16",
-                                      "x1.125", "x1.2", "x1.25", "x1.5", "x3", "/3");
+    GetParam(VoiceParam(v, kVoiceOctave))->InitEnum(nameOct, tuning::kPitchNeutralIdx, 15, "", IParam::kFlagsNone, "",
+                                                      "/16", "/8", "/4", "/3", "/2", "1",
+                                      "x1.125", "x1.2", "x1.25", "x1.5", "x2", "x3", "x4", "x8", "x16");
     GetParam(VoiceParam(v, kVoiceFine))->InitDouble(nameFine, 0., -20., 20., 0.1, "Hz");
   }
 
@@ -292,9 +293,11 @@ Photo::Photo(const InstanceInfo& info)
       attachTune(mParamControls[kParamTuneStart + i]);
     }
 
-    attachTune(new ITextControl(IRECT(tb.L, tb.T + 280.f, tb.R, tb.T + 304.f), "Projection d'octave (cents par octave, cumulative, pivot = Do central)", IText(14.f, COLOR_LIGHT_GRAY, "Roboto-Regular", EAlign::Near, EVAlign::Middle)));
+    attachTune(new ITextControl(IRECT(tb.L, tb.T + 280.f, tb.R, tb.T + 304.f), "Octave : cents par octave, cumulatif, pivot Do central.   Hauteur : decalage global en cents (mode Synthe).", IText(14.f, COLOR_LIGHT_GRAY, "Roboto-Regular", EAlign::Near, EVAlign::Middle)));
     mParamControls[kParamTuneStretch] = new IVKnobControl(IRECT(tb.L, tb.T + 306.f, tb.L + 120.f, tb.T + 420.f).GetCentredInside(68.f), kParamTuneStretch, "Octave", knobStyle, true);
     attachTune(mParamControls[kParamTuneStretch]);
+    mParamControls[kParamTuneGlobal] = new IVKnobControl(IRECT(tb.L + 140.f, tb.T + 306.f, tb.L + 260.f, tb.T + 420.f).GetCentredInside(68.f), kParamTuneGlobal, "Hauteur", knobStyle, true);
+    attachTune(mParamControls[kParamTuneGlobal]);
 
     attachTune(new ITextControl(IRECT(tb.L, tb.T + 450.f, tb.R, tb.T + 520.f),
       "Clic sur la valeur sous un potard : taper la valeur. Double-clic sur un potard : remise a 0. Racine : mode Synthe seulement (en Relatif l echelle part toujours du Do central).",
@@ -356,6 +359,7 @@ void Photo::ApplyTuningPreset(int preset)
   };
   for (int i = 0; i < tuning::kNumPitchClasses; i++) setParam(kParamTuneStart + i, dev[i]);
   setParam(kParamTuneStretch, 0.);
+  setParam(kParamTuneGlobal, preset == 1 ? tuning::kYoungGlobal : 0.);
   setParam(kParamTuneRoot, preset == 1 ? tuning::kYoungRoot : 0);
 }
 
@@ -429,19 +433,20 @@ void Photo::OnParamChange(int paramIdx)
     UpdateEngine();
 }
 
-void Photo::ReadTuning(double* dev, int& root, double& stretch) const
+void Photo::ReadTuning(double* dev, int& root, double& stretch, double& global) const
 {
   for (int i = 0; i < tuning::kNumPitchClasses; i++) dev[i] = GetParam(kParamTuneStart + i)->Value();
   root = (int)GetParam(kParamTuneRoot)->Value();
   stretch = GetParam(kParamTuneStretch)->Value();
+  global = GetParam(kParamTuneGlobal)->Value();
 }
 
 // Frequence d'une touche MIDI selon le tempérament courant.
 float Photo::TunedFreq(int note) const
 {
-  double dev[tuning::kNumPitchClasses], stretch; int root;
-  ReadTuning(dev, root, stretch);
-  return (float)tuning::Frequency(note, dev, root, stretch);
+  double dev[tuning::kNumPitchClasses], stretch, global; int root;
+  ReadTuning(dev, root, stretch, global);
+  return (float)tuning::Frequency(note, dev, root, stretch, global);
 }
 
 // Rapport de transposition d'une touche par rapport a la touche 60
@@ -449,9 +454,9 @@ float Photo::TunedFreq(int note) const
 // La note racine ne compte pas ici : l'echelle est toujours lue a partir du Do.
 float Photo::TunedRatio(int note) const
 {
-  double dev[tuning::kNumPitchClasses], stretch; int root;
-  ReadTuning(dev, root, stretch);
-  (void)root; // Relatif : la reference est toujours le Do central, donc racine = Do
+  double dev[tuning::kNumPitchClasses], stretch, global; int root;
+  ReadTuning(dev, root, stretch, global);
+  (void)root; (void)global; // la hauteur globale s'annule dans un rapport // Relatif : la reference est toujours le Do central, donc racine = Do
   return (float)tuning::Ratio(note, dev, 0, stretch);
 }
 
