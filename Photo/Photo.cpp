@@ -120,7 +120,8 @@ Photo::Photo(const InstanceInfo& info)
   {
     char name[16];
     snprintf(name, sizeof(name), "H%d", h + 2); // harmonique 2 a 17
-    GetParam(kParamHarmonic1 + h)->InitPercentage(name, 0.);
+    // Courbe exponentielle (puissance 3) : beaucoup de precision au debut de course.
+    GetParam(kParamHarmonic1 + h)->InitDouble(name, 0., 0., 100., 0.01, "%", IParam::kFlagsNone, "", IParam::ShapePowCurve(3.));
   }
 
   GetParam(kParamStereoHz)->InitDouble("Ecart D/G", 0., -10., 10., 0.01, "Hz");
