@@ -122,11 +122,21 @@ private:
   float TunedFreq(int note) const;
   float TunedRatio(int note) const;
 
-  // Protege le moteur : RebuildIfNeeded() (thread principal, a chaque
-  // changement de potard Harm/Skew) ne doit jamais s'executer en meme
-  // temps que la lecture de la table (thread audio, dans ProcessBlock).
-  std::mutex mEngineMutex;
-  WavetableEngine mEngine;
+  // Table d'onde : le "constructeur" (mBuilder) fabrique les tables, l'audio
+  // ne le lit JAMAIS. Un changement (Forme, Skew, Harmoniques) est publie dans
+  // mPending, puis le thread audio fait un FONDU ENCHAINE de ~15 ms de
+  // l'ancienne table vers la nouvelle (pas de clic quand on bouge un potard
+  // vite). mTabA = ancienne, mTabB = courante/nouvelle, mXfade = progression.
+  std::mutex mBuildMutex;   // protege mBuilder (reconstruction)
+  std::mutex mPendingMutex; // protege mPending (publication, tres bref)
+  WavetableEngine mBuilder;
+  float mPending[WavetableEngine::kTableSize] = { 0.f };
+  bool mPendingImmediate = true; // premiere table : pas de fondu
+  std::atomic<bool> mPendingNew { false };
+  std::atomic<bool> mEngineDirty { true };
+  float mTabA[WavetableEngine::kTableSize] = { 0.f };
+  float mTabB[WavetableEngine::kTableSize] = { 0.f };
+  float mXfade = 1.f;
 
   // UNE analyse FFT partagee par les 12 voix (au lieu d'une par voix).
   PeakAnalyzer mAnalyzer;

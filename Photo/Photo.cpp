@@ -314,6 +314,12 @@ Photo::Photo(const InstanceInfo& info)
 void Photo::OnIdle()
 {
 #if IPLUG_DSP
+  // Si l'audio ne tourne pas (hote arrete), la table est quand meme reconstruite.
+  if (mEngineDirty.load() && mBuildMutex.try_lock())
+  {
+    mBuildMutex.unlock();
+    if (mEngineDirty.exchange(false)) UpdateEngine();
+  }
   if (mPhotoBtn && mMemValid.load() != mMemShown)
   {
     mMemShown = mMemValid.load();
@@ -374,6 +380,10 @@ void Photo::SyncUIToState()
 void Photo::ApplyAllState()
 {
 #if IPLUG_DSP
+  {
+    std::lock_guard<std::mutex> lk(mPendingMutex);
+    mPendingImmediate = true; // table initiale : pas de fondu
+  }
   UpdateEngine();
   mAnalyzer.Init(2048, GetSampleRate());
   for (int v = 0; v < kNumVoices; v++)
@@ -385,23 +395,30 @@ void Photo::ApplyAllState()
 
 void Photo::UpdateEngine()
 {
+  std::lock_guard<std::mutex> build(mBuildMutex);
+
   int shapeIdx = (int)GetParam(kParamBaseShape)->Value();
-  mEngine.SetBaseShape((WavetableEngine::BaseShape)shapeIdx);
-  mEngine.SetSkew((float)(GetParam(kParamSkew)->Value() / 100.0));
+  mBuilder.SetBaseShape((WavetableEngine::BaseShape)shapeIdx);
+  mBuilder.SetSkew((float)(GetParam(kParamSkew)->Value() / 100.0));
 
   for (int h = 0; h < WavetableEngine::kNumHarmonics; h++)
   {
     float amp = (float)(GetParam(kParamHarmonic1 + h)->Value() / 100.0);
-    mEngine.SetHarmonicAmp(h, amp);
+    mBuilder.SetHarmonicAmp(h, amp);
   }
 
+  mBuilder.RebuildIfNeeded();
+
+  const float* table = mBuilder.GetTable();
+  int size = mBuilder.GetTableSize();
+
+  // Publication pour le thread audio (copie breve), qui fera le fondu.
   {
-    std::lock_guard<std::mutex> lock(mEngineMutex);
-    mEngine.RebuildIfNeeded();
+    std::lock_guard<std::mutex> lk(mPendingMutex);
+    for (int i = 0; i < size; i++) mPending[i] = table[i];
+    mPendingNew.store(true);
   }
 
-  const float* table = mEngine.GetTable();
-  int size = mEngine.GetTableSize();
   int uiSize = std::min(size, WavetableEngine::kTableSize);
   for (int i = 0; i < uiSize; i++)
     mWaveUIBuf[i] = table[i];
@@ -431,7 +448,7 @@ void Photo::OnParamChange(int paramIdx)
   // Seuls ces parametres reconstruisent la table d'onde.
   if (paramIdx == kParamBaseShape || paramIdx == kParamSkew
       || (paramIdx >= kParamHarmonic1 && paramIdx <= kParamHarmonic16))
-    UpdateEngine();
+    mEngineDirty.store(true); // la reconstruction est faite une seule fois par bloc (ProcessBlock / OnIdle)
 }
 
 void Photo::ReadTuning(double* dev, int& root, double& stretch, double& global) const
@@ -526,6 +543,38 @@ void Photo::ProcessBlock(sample** inputs, sample** outputs, int nFrames)
   for (int i = 0; i < n; i++)
     mInBuf[i] = (float)inputs[0][i];
 
+  // Table d'onde : une seule reconstruction par bloc au maximum (les potards
+  // Harm/Skew peuvent envoyer beaucoup de changements d'affilee).
+  if (mEngineDirty.load() && mBuildMutex.try_lock())
+  {
+    mBuildMutex.unlock();
+    if (mEngineDirty.exchange(false)) UpdateEngine();
+  }
+  // Nouvelle table publiee ? On gele l'etat courant du fondu dans mTabA, puis
+  // on repart de 0 vers la nouvelle table (mTabB). try_lock : l'audio n'attend jamais.
+  if (mPendingNew.load())
+  {
+    std::unique_lock<std::mutex> lk(mPendingMutex, std::try_to_lock);
+    if (lk.owns_lock() && mPendingNew.exchange(false))
+    {
+      const int ts = WavetableEngine::kTableSize;
+      if (mPendingImmediate)
+      {
+        for (int i = 0; i < ts; i++) { mTabA[i] = mPending[i]; mTabB[i] = mPending[i]; }
+        mXfade = 1.f;
+        mPendingImmediate = false;
+      }
+      else
+      {
+        const float t = std::min(mXfade, 1.f);
+        for (int i = 0; i < ts; i++) { mTabA[i] += t * (mTabB[i] - mTabA[i]); mTabB[i] = mPending[i]; }
+        mXfade = 0.f;
+      }
+    }
+  }
+  // Duree du fondu enchaine : ~15 ms.
+  const float xfadeStep = 1.f / std::max(1.f, 0.015f * (float)GetSampleRate());
+
   // Changement de mode : on coupe tout (sinon le son fige du mode Boutons
   // resterait audible au clavier, et inversement).
   const int mode = (int)GetParam(kParamMode)->Value(); // 0 Boutons, 1 Clavier, 2 Synthe, 3 Relatif
@@ -581,14 +630,18 @@ void Photo::ProcessBlock(sample** inputs, sample** outputs, int nFrames)
   }
 
   {
-    std::lock_guard<std::mutex> lock(mEngineMutex);
+    const int tsize = WavetableEngine::kTableSize;
     for (int i = 0; i < n; i++)
     {
+      const bool fading = mXfade < 1.f;
+      if (fading) { mXfade += xfadeStep; if (mXfade > 1.f) mXfade = 1.f; }
+
       float sumL = 0.f, sumR = 0.f;
       for (int v = 0; v < kNumVoices; v++)
       {
         float l, r;
-        mSnapshots[v].Synthesize(mEngine, l, r);
+        if (mXfade < 1.f) mSnapshots[v].Synthesize(mTabA, mTabB, mXfade, tsize, l, r);
+        else mSnapshots[v].Synthesize(mTabB, nullptr, 0.f, tsize, l, r);
         sumL += l;
         sumR += r;
       }

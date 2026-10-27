@@ -64,6 +64,11 @@ public:
     if (mTable.empty())
       mTable.assign(kTableSize, 0.f);
 
+    // Harmoniques actives : on s'arrete a la plus haute.
+    int maxH = -1;
+    for (int h = 0; h < kNumHarmonics; h++)
+      if (mHarmonicAmps[h] > 0.0001f) maxH = h;
+
     for (int i = 0; i < kTableSize; i++)
     {
       float rawPhase = (float)i / (float)kTableSize; // 0..1
@@ -73,11 +78,22 @@ public:
       // Harmoniques 2 a 17 (l'harmonique 1/fondamentale est deja portee
       // par la forme de base elle-meme) - sinus purs, ajoutes par-dessus,
       // meme phase deformee (Skew) que la forme de base.
-      for (int h = 0; h < kNumHarmonics; h++)
+      // Recurrence de Chebyshev : sin((n+1)x) = 2 cos(x) sin(nx) - sin((n-1)x)
+      // (un seul sin/cos par point au lieu de 16 : reconstruction ~8x plus
+      // rapide, pour que bouger un potard ne charge pas le thread audio).
+      if (maxH >= 0)
       {
-        if (mHarmonicAmps[h] <= 0.0001f) continue;
-        int harmonicNumber = h + 2;
-        y += mHarmonicAmps[h] * std::sin(2.f * (float)M_PI * (float)harmonicNumber * phase);
+        const double x = 2.0 * M_PI * (double)phase;
+        const double c = std::cos(x);
+        double sPrev = std::sin(x);          // sin(1x)
+        double sCur = 2.0 * c * sPrev - 0.0; // sin(2x) = 2 cos(x) sin(x)
+        for (int h = 0; h <= maxH; h++)      // h=0 -> harmonique 2
+        {
+          if (mHarmonicAmps[h] > 0.0001f) y += mHarmonicAmps[h] * (float)sCur;
+          const double sNext = 2.0 * c * sCur - sPrev;
+          sPrev = sCur;
+          sCur = sNext;
+        }
       }
 
       mTable[i] = y;

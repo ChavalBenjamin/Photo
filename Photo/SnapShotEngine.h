@@ -441,6 +441,14 @@ public:
   // reste la SEULE source de timbre.
   void Synthesize(const WavetableEngine& engine, float& outL, float& outR)
   {
+    Synthesize(engine.GetTable(), nullptr, 0.f, engine.GetTableSize(), outL, outR);
+  }
+
+  // Version avec FONDU ENCHAINE entre deux tables : tabB (nullable) est melangee
+  // a tabA avec le coefficient "blend" (0 = tabA seule, 1 = tabB seule). Sert a
+  // changer de table d'onde (Forme, Skew, Harmoniques) sans clic.
+  void Synthesize(const float* tabA, const float* tabB, float blend, int size, float& outL, float& outR)
+  {
     float gain = 1.f;
     if (mUseEnv)
     {
@@ -448,8 +456,7 @@ public:
       gain = mEnv.Process() * mVelGain;
     }
 
-    const float* table = engine.GetTable();
-    const int size = engine.GetTableSize();
+    const float* table = tabA;
     const float nyquist = (float)mSampleRate * 0.5f;
     const float sr = (float)mSampleRate;
 
@@ -472,13 +479,13 @@ public:
 
       if (freqL > 0.f && freqL < nyquist) // garde-fou : evite repliement / depassement de table
       {
-        sumL += mAmpCur[p] * ReadTable(table, size, mPeakPhase[p]);
+        sumL += mAmpCur[p] * ReadMix(table, tabB, blend, size, mPeakPhase[p]);
         mPeakPhase[p] += freqL / sr;
         if (mPeakPhase[p] >= 1.f) mPeakPhase[p] -= std::floor(mPeakPhase[p]);
       }
       if (freqR > 0.f && freqR < nyquist)
       {
-        sumR += mAmpCur[p] * ReadTable(table, size, mPeakPhaseR[p]);
+        sumR += mAmpCur[p] * ReadMix(table, tabB, blend, size, mPeakPhaseR[p]);
         mPeakPhaseR[p] += freqR / sr;
         if (mPeakPhaseR[p] >= 1.f) mPeakPhaseR[p] -= std::floor(mPeakPhaseR[p]);
       }
@@ -488,6 +495,13 @@ public:
   }
 
 private:
+  static float ReadMix(const float* a, const float* b, float blend, int size, float phase)
+  {
+    const float va = ReadTable(a, size, phase);
+    if (!b) return va;
+    return va + blend * (ReadTable(b, size, phase) - va);
+  }
+
   static float ReadTable(const float* table, int size, float phase)
   {
     float pos = phase * (float)size;
@@ -639,3 +653,4 @@ private:
   int mFreqRemain[kMaxPeaks] = { 0 };
   int mAmpRemain[kMaxPeaks] = { 0 };
 };
+
